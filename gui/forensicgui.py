@@ -686,6 +686,7 @@ class ForensicGUI:
 
                 # Schedule GUI updates on the main thread
                 if vol_checkbox_infos:
+                    self.clear_volume_checkboxes() # Clear any existing checkboxes before adding new ones
                     for vol_info_t in vol_checkbox_infos:
                         self.root.after(0, lambda v_info=vol_info_t: VolumeCheckbox(
                             self.vol_scrollable_frame,
