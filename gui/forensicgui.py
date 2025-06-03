@@ -742,7 +742,9 @@ class ForensicGUI:
                 self.root.after(0, self.show_login) # Re-show login on failure
             finally:
                 self.root.after(0, self.hide_loading_screen)
-                
+                self.root.lift()
+                self.root.attributes('-topmost', True)
+                self.root.after(500, lambda: self.root.attributes('-topmost', False))
         threading.Thread(target=validate_thread, daemon=True).start()
         
     def refresh_instances(self):
