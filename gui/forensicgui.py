@@ -681,12 +681,12 @@ class ForensicGUI:
                                 # Add any other relevant volume details here
                             }
                             break # Found attachment for this instance, move to next volume
+                self.clear_volume_checkboxes() # Clear any existing checkboxes before adding new ones
                 
                 self.volumes = loaded_vols_data # Update the main cache
 
                 # Schedule GUI updates on the main thread
                 if vol_checkbox_infos:
-                    self.clear_volume_checkboxes() # Clear any existing checkboxes before adding new ones
                     for vol_info_t in vol_checkbox_infos:
                         self.root.after(0, lambda v_info=vol_info_t: VolumeCheckbox(
                             self.vol_scrollable_frame,
