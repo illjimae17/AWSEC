@@ -139,22 +139,35 @@ class ForensicGUI:
         # Volume selection frame
         self.volume_frame = ttk.LabelFrame(self.instance_tab, text="Select Volume for Forensic Imaging (Select One)")
         self.volume_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
+
         self.vol_canvas = tk.Canvas(self.volume_frame, bg='#f0f0f0', highlightthickness=0)
         self.vol_scrollbar = ttk.Scrollbar(self.volume_frame, orient="vertical", command=self.vol_canvas.yview)
-        self.vol_scrollable_frame = ttk.Frame(self.vol_canvas) # This frame will hold VolumeCheckbox widgets
-        
-        self.vol_scrollable_frame.bind("<Configure>", lambda e: self.vol_canvas.configure(scrollregion=self.vol_canvas.bbox("all")))
-        
+        self.vol_scrollable_frame = ttk.Frame(self.vol_canvas)
+
+        self.vol_scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.vol_canvas.configure(scrollregion=self.vol_canvas.bbox("all"))
+        )
+
         self.vol_canvas.create_window((0, 0), window=self.vol_scrollable_frame, anchor="nw")
+
         self.vol_canvas.configure(yscrollcommand=self.vol_scrollbar.set)
-        
+
+        # Make the canvas expand and fill available space
         self.vol_canvas.pack(side="left", fill="both", expand=True)
         self.vol_scrollbar.pack(side="right", fill="y")
-        
+
+        # Make the volume_frame propagate resizing to its children
+        self.volume_frame.pack_propagate(False)
+        self.volume_frame.rowconfigure(0, weight=1)
+        self.volume_frame.columnconfigure(0, weight=1)
+        self.vol_canvas.bind("<Configure>", lambda e: self.vol_canvas.itemconfig(1, width=e.width))
         # Continue button
-        self.continue_btn = ttk.Button(self.instance_tab, text="Continue to Forensic Process", command=self.prepare_forensic_tab)
-        self.continue_btn.pack(pady=10)
+        # Use a dedicated frame and pack with side/bottom anchor to keep button visible on resize
+        btn_frame = ttk.Frame(self.instance_tab)
+        btn_frame.pack(fill=tk.X, side=tk.BOTTOM, pady=10)
+        self.continue_btn = ttk.Button(btn_frame, text="Continue to Forensic Process", command=self.prepare_forensic_tab)
+        self.continue_btn.pack(pady=0)
         self.continue_btn.config(state=tk.DISABLED)
         
         self.instance_status_label = ttk.Label(self.instance_tab, text="", style='Status.TLabel')
