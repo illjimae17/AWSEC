@@ -18,6 +18,7 @@ from reportlab.pdfgen import canvas
 from .logindialog import LoginDialog
 from .instancebutton import InstanceButton
 from .volumecheckbox import VolumeCheckbox
+import multiprocessing
 
 # ===================== GUI CLASSES =====================
 class ForensicGUI:
@@ -240,7 +241,7 @@ class ForensicGUI:
         self.start_btn = ttk.Button(
             btn_frame, 
             text="Start Evidence Gathering Process", 
-            command=lambda: [self.start_forensic_process(), self.passphrase_entry.delete(0, tk.END)]
+            command=self.start_forensic_process
         )
         self.start_btn.pack(side=tk.LEFT, padx=5)
         
@@ -855,7 +856,18 @@ class ForensicGUI:
         self.notebook.tab(0, state=tk.DISABLED) # Disable Instance Selection Tab
         self.start_btn.config(state=tk.DISABLED)
         self.cancel_btn.config(state=tk.NORMAL)
-        
+
+        # Disable input fields and browse buttons during process
+        self.key_path_entry.config(state=tk.DISABLED)
+        self.passphrase_entry.config(state=tk.DISABLED)
+        self.output_dir_entry.config(state=tk.DISABLED)
+        # Find and disable browse buttons in config_frame
+        for child in self.forensic_tab.winfo_children():
+            if isinstance(child, ttk.Frame):
+                for widget in child.winfo_children():
+                    if isinstance(widget, ttk.Button) and widget['text'] == "Browse":
+                        widget.config(state=tk.DISABLED)
+
         self.status_text.config(state=tk.NORMAL)
         self.status_text.delete("1.0", tk.END) 
         # Re-populate with current selection, as it might have been cleared by tab switch
@@ -867,9 +879,8 @@ class ForensicGUI:
 
         self.overall_progress['value'] = 0
         self.step_progress['value'] = 0
-        
         threading.Thread(target=self.run_forensic_process, daemon=True).start()
-        
+
     def run_forensic_process(self):
         """Core forensic process logic for the single selected volume."""
         raw_image_hash_on_forensic = "N/A_Calculation_Pending" # Initialize
@@ -891,7 +902,7 @@ class ForensicGUI:
                 'is_root_volume': is_root_volume,
                 'was_stopped_by_tool': False 
             }
-            self.log_message(f"Starting evidenc gatherint for volume {vol_id_to_process} (Size: {evidence_volume_size}GB) from instance {original_instance_data['InstanceId']}.", 'info')
+            self.log_message(f"Starting evidence gathering for volume {vol_id_to_process} (Size: {evidence_volume_size}GB) from instance {original_instance_data['InstanceId']}.", 'info')
             self.root.after(0, lambda: self.overall_progress.config(value=5))
 
             # 1. Create Forensic Instance
@@ -1065,6 +1076,7 @@ class ForensicGUI:
             self.log_message("\nVolume imaging process completed successfully for the volume!", 'success')
             self.log_message("WARNING: Use the provided passphrase to decrypt the .gpg image file.", 'warning')
 
+
         except InterruptedError: 
             self.log_message("\nGathering process explicitly cancelled by user.", 'warning')
         except Exception as e:
@@ -1074,6 +1086,7 @@ class ForensicGUI:
                 self.log_message(traceback.format_exc(), 'error') 
         finally:
             self.root.after(0, self.cleanup_forensic_process)
+
             
     def cleanup_forensic_process(self):
         """Cleanup after forensic process, including resource restoration on success or cancellation."""
@@ -1118,11 +1131,21 @@ class ForensicGUI:
                 self.log_message(f"Failed to terminate forensic instance {self.forensic_instance['InstanceId']}. Please check AWS console.", 'error')
         
         self.root.after(0, lambda: self.start_btn.config(state=tk.NORMAL))
-        self.root.after(0, lambda: self.cancel_btn.config(state=tk.DISABLED)) # Correct: cancel disabled when idle
-        self.root.after(0, lambda: self.notebook.tab(0, state=tk.NORMAL)) 
+        self.root.after(0, lambda: self.cancel_btn.config(state=tk.DISABLED))
+        self.root.after(0, lambda: self.notebook.tab(0, state=tk.NORMAL))
         self.root.after(0, lambda: self.overall_progress.config(value=0))
         self.root.after(0, lambda: self.step_progress.config(value=0))
-
+        # Re-enable input fields and browse buttons after process
+        self.root.after(0, lambda: self.key_path_entry.config(state=tk.NORMAL))
+        self.root.after(0, lambda: self.passphrase_entry.config(state=tk.NORMAL))
+        self.root.after(0, lambda: self.output_dir_entry.config(state=tk.NORMAL))
+        def enable_browse_buttons():
+            for child in self.forensic_tab.winfo_children():
+                if isinstance(child, ttk.Frame):
+                    for widget in child.winfo_children():
+                        if isinstance(widget, ttk.Button) and widget['text'] == "Browse":
+                            widget.config(state=tk.NORMAL)
+        self.root.after(0, enable_browse_buttons)
         if self.cancellation_requested:
             self.log_message("Cancellation cleanup complete. Resources have been restored/terminated as applicable.", 'warning')
         else:
@@ -1384,6 +1407,7 @@ class ForensicGUI:
 
             self.log_message(f"Reattaching volume {volume_id} to original instance {original_instance_id} as {original_device_name}...", 'info')
             ec2.attach_volume(VolumeId=volume_id, InstanceId=original_instance_id, Device=original_device_name)
+
             waiter_in_use = ec2.get_waiter('volume_in_use')
             waiter_in_use.wait(VolumeIds=[volume_id], Filters=[{'Name':'attachment.instance-id', 'Values':[original_instance_id]}], WaiterConfig={'Delay': 10, 'MaxAttempts': 12})
             self.log_message(f"Volume {volume_id} reattached to {original_instance_id} as {original_device_name}.", 'success')
@@ -1491,7 +1515,6 @@ class ForensicGUI:
             exit_status_lsblk = stdout.channel.recv_exit_status()
             lsblk_output_raw = stdout.read().decode(errors='ignore').strip()
             lsblk_error_raw = stderr_lsblk.read().decode(errors='ignore').strip()
-            print(lsblk_output_raw)
 
             self.log_message(f"Full lsblk output ('{lsblk_command}'):\n{lsblk_output_raw if lsblk_output_raw else '<empty>'}", "info", timestamp=False)
             if lsblk_error_raw:
@@ -1512,7 +1535,7 @@ class ForensicGUI:
                              self.log_message("Parsed device_name_short is empty. Will retry if attempts remain.", "warning")
                         else:
                             actual_device_path_for_dc3dd = f"/dev/{device_name_short}"
-                            self.log_message(f"Using device path: {actual_device_path_for_dc3dd} (derived from '{lsblk_command}', line: '{device_line_to_parse}'). WARNING: This discovery method is fragile.", "critical_warning")
+                            # self.log_message(f"Using device path: {actual_device_path_for_dc3dd} (derived from '{lsblk_command}', line: '{device_line_to_parse}'). WARNING: This discovery method is fragile.", "critical_warning")
                             break 
                     
                     except IndexError:
@@ -1640,7 +1663,6 @@ class ForensicGUI:
         # Log last few lines of dc3dd output before exit status
         full_stderr_output_from_dc3dd = "".join(dc3dd_stderr_output_lines)
         if full_stderr_output_from_dc3dd: # Check if there's any output
-            self.log_message("--- Final lines from dc3dd stderr before exit status: ---", "info", timestamp=True)
             # Iterate through stored lines to find the actual last few non-empty ones
             actual_last_lines = [line.strip() for line in full_stderr_output_from_dc3dd.splitlines() if line.strip()]
             for line in actual_last_lines[-5:]: 
@@ -1648,7 +1670,7 @@ class ForensicGUI:
 
 
         exit_status_dc3dd_val = dc3dd_channel.recv_exit_status()
-        self.log_message(f"--- dc3dd process exit_status: {exit_status_dc3dd_val} ---", "info", timestamp=True)
+        self.log_message(f"--- dc3dd process completed exit_status: {exit_status_dc3dd_val} ---", "info", timestamp=True)
         
         # Read any remaining stderr/stdout after exit (should be minimal if loop was thorough)
         while dc3dd_channel.recv_stderr_ready():
@@ -1683,6 +1705,7 @@ class ForensicGUI:
         if self.cancellation_requested:
             self.log_message(f"Remote SHA256 calculation for {remote_file_path} cancelled before start.", "warning")
             raise InterruptedError("Remote SHA256 calculation cancelled.")
+
         self.log_message(f"Calculating SHA256 for remote file: {remote_file_path}", "info")
         command = f"sha256sum {remote_file_path}"
         stdin, stdout, stderr = self.ssh_client.exec_command(command, timeout=7200) # Increased timeout for potentially large files
@@ -1752,8 +1775,43 @@ class ForensicGUI:
                  self.root.after(0, lambda: progress_widget.config(value=0))
             return f"N/A_Local_Hash_Error_For_{os.path.basename(local_file_path)}"
             
+    def calculate_sha256_local_parallel(self, file_paths):
+        """
+        Calculate SHA256 hashes for a list of local files in parallel using multiprocessing.
+        Logs results to the GUI.
+        """
+        def hash_file(path):
+            try:
+                sha256_hash = hashlib.sha256()
+                with open(path, "rb") as f:
+                    for byte_block in iter(lambda: f.read(4096 * 1024), b""):
+                        sha256_hash.update(byte_block)
+                return (path, sha256_hash.hexdigest())
+            except Exception as e:
+                return (path, f"ERROR: {e}")
+
+        self.log_message(f"Starting parallel SHA256 hashing for {len(file_paths)} files...", "info")
+        with multiprocessing.Pool(processes=min(multiprocessing.cpu_count(), len(file_paths))) as pool:
+            results = pool.map(hash_file, file_paths)
+        for path, hashval in results:
+            self.log_message(f"SHA256 for {os.path.basename(path)}: {hashval}", "success" if not hashval.startswith("ERROR") else "error")
+        return dict(results)
+
     def gpg_encrypt_symmetric(self, input_file_path, passphrase, output_file_path):
         """Encrypt the forensic image using GPG symmetrically."""
+        # Validate passphrase before proceeding
+        if not passphrase or not passphrase.strip():
+            self.log_message("GPG encryption failed: Passphrase is empty or only whitespace.", "error")
+            raise Exception("GPG encryption failed: Passphrase is empty or only whitespace.")
+        if any(c in passphrase for c in ["'", '"', "\n", "\r"]):
+            self.log_message("GPG encryption failed: Passphrase contains invalid characters (quotes or newlines).", "error")
+            raise Exception("GPG encryption failed: Passphrase contains invalid characters (quotes or newlines).")
+        try:
+            passphrase.encode("ascii")
+        except Exception:
+            self.log_message("GPG encryption failed: Passphrase must contain only ASCII characters.", "error")
+            raise Exception("GPG encryption failed: Passphrase must contain only ASCII characters.")
+
         if self.cancellation_requested:
             self.log_message(f"GPG encryption for {input_file_path} cancelled before start.", "warning")
             raise InterruptedError("GPG encryption cancelled.")
@@ -1764,9 +1822,6 @@ class ForensicGUI:
         self.log_message(f"Executing GPG encryption: gpg ... -o {output_file_path} {input_file_path}", 'info', timestamp=False) 
         
         stdin, stdout, stderr = self.ssh_client.exec_command(command, timeout=7200) 
-        # Add cancellation check for GPG if it were to take extremely long,
-        # but GPG itself doesn't have an easy way to show progress for symmetric encryption to hook into.
-        # For now, rely on the initial check and the fact that subsequent steps will check.
         exit_status = stdout.channel.recv_exit_status()
         
         out = stdout.read().decode(errors='ignore').strip()
