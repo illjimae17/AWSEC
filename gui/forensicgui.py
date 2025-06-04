@@ -70,11 +70,12 @@ class ForensicGUI:
         
         self.monitor_log_queue()
         self.disable_tabs([0, 1, 2]) # Disable all initially
-        self.show_login()
 
         # Handle window close button
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
-        
+
+        self.show_login()
+
     def on_closing(self):
         """Handles the event of closing the window."""
         # Check if forensic process is running (start_btn is disabled, cancel_btn is enabled)
