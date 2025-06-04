@@ -24,7 +24,7 @@ class ForensicGUI:
     def __init__(self, root):
         self.cancellation_requested = False
         self.root = root
-        self.root.title("AWS EC2 Forensic Imaging Tool")
+        self.root.title("AWS EC2 Evidence Gathering Tool")
         self.root.geometry("1200x800")
         self.root.minsize(1000, 700)
         
@@ -166,7 +166,7 @@ class ForensicGUI:
         # Use a dedicated frame and pack with side/bottom anchor to keep button visible on resize
         btn_frame = ttk.Frame(self.instance_tab)
         btn_frame.pack(fill=tk.X, side=tk.BOTTOM, pady=10)
-        self.continue_btn = ttk.Button(btn_frame, text="Continue to Forensic Process", command=self.prepare_forensic_tab)
+        self.continue_btn = ttk.Button(btn_frame, text="Continue to Gathering Process", command=self.prepare_forensic_tab)
         self.continue_btn.pack(pady=0)
         self.continue_btn.config(state=tk.DISABLED)
         
@@ -194,9 +194,9 @@ class ForensicGUI:
     def setup_forensic_tab(self):
         """Setup the forensic process tab"""
         self.forensic_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.forensic_tab, text="Forensic Process")
+        self.notebook.add(self.forensic_tab, text="Gathering Process")
         
-        header = ttk.Label(self.forensic_tab, text="Forensic Imaging Process", style='Header.TLabel')
+        header = ttk.Label(self.forensic_tab, text="Evidence Gathering Process", style='Header.TLabel')
         header.pack(pady=10)
         
         config_frame = ttk.Frame(self.forensic_tab)
@@ -236,7 +236,11 @@ class ForensicGUI:
         btn_frame = ttk.Frame(self.forensic_tab)
         btn_frame.pack(pady=10)
         
-        self.start_btn = ttk.Button(btn_frame, text="Start Forensic Process", command=self.start_forensic_process)
+        self.start_btn = ttk.Button(
+            btn_frame, 
+            text="Start Evidence Gathering Process", 
+            command=lambda: [self.start_forensic_process(), self.passphrase_entry.delete(0, tk.END)]
+        )
         self.start_btn.pack(side=tk.LEFT, padx=5)
         
         self.cancel_btn = ttk.Button(btn_frame, text="Cancel", command=self.cancel_process, state=tk.DISABLED)
