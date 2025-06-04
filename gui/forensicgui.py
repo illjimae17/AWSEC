@@ -250,39 +250,24 @@ class ForensicGUI:
         self.forensic_status_label.pack(pady=5)
 
     def export_all_logs(self):
-        """Export all logs to a zip file"""
+        """Export only the GUI log to a .log file (no zip, no output_dir files)"""
         try:
-            if not self.output_dir:
-                messagebox.showerror("Error", "No output directory specified where logs might be.")
-                return
-
-            zip_path = filedialog.asksaveasfilename(
-                defaultextension=".zip",
-                filetypes=[("ZIP files", "*.zip")],
-                title="Save All Collected Data As Zip"
+            log_path = filedialog.asksaveasfilename(
+                defaultextension=".log",
+                filetypes=[("Log files", "*.log"), ("Text files", "*.txt"), ("All files", "*.*")],
+                title="Save GUI Log As"
             )
-            if not zip_path:
+            if not log_path:
                 return
 
-            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                # Add main forensic log from the GUI
-                gui_log_content = self.log_text.get("1.0", tk.END)
-                zipf.writestr("forensic_tool_gui.log", gui_log_content)
-                
-                # Add files from the output directory (CoC, images, etc.)
-                if os.path.exists(self.output_dir):
-                    for root, dirs, files in os.walk(self.output_dir):
-                        for file in files:
-                            file_path = os.path.join(root, file)
-                            arcname = os.path.relpath(file_path, self.output_dir)
-                            zipf.write(file_path, arcname)
-                else:
-                    self.log_message("Output directory does not exist, only GUI log included.", 'warning')
+            gui_log_content = self.log_text.get("1.0", tk.END)
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write(gui_log_content)
 
-            self.log_message(f"All collected data exported to {zip_path}", 'success')
+            self.log_message(f"GUI log exported to {log_path}", 'success')
         except Exception as e:
             self.log_message(f"Export failed: {str(e)}", 'error')
-            messagebox.showerror("Export Error", f"Failed to export data: {str(e)}")
+            messagebox.showerror("Export Error", f"Failed to export log: {str(e)}")
 
     def generate_report(self):
         try:
@@ -298,7 +283,7 @@ class ForensicGUI:
             width, height = letter
             
             c.setFont("Helvetica-Bold", 16)
-            c.drawString(72, height - 72, "Digital Forensic Summary Report")
+            c.drawString(72, height - 72, "Evidence Gathering Summary Report")
             
             y_position = height - 100
             c.setFont("Helvetica", 12)
@@ -364,7 +349,7 @@ class ForensicGUI:
             
             c.save()
             self.log_message(f"Report generated at {report_path}", 'success')
-            messagebox.showinfo("Report Generated", f"Forensic report saved to:\n{report_path}")
+            messagebox.showinfo("Report Generated", f"Evidence Gathering report saved to:\n{report_path}")
         except Exception as e:
             self.log_message(f"Report generation failed: {str(e)}", 'error')
             messagebox.showerror("Report Error", f"Failed to generate report: {str(e)}")
@@ -402,7 +387,7 @@ class ForensicGUI:
         
         result_frame = ttk.Frame(paned, width=400) # Give initial width hint
         result_frame.pack_propagate(False)
-        ttk.Label(result_frame, text="Forensic Summary", style='Header.TLabel').pack(pady=5)
+        ttk.Label(result_frame, text="Evidence Gathering Summary", style='Header.TLabel').pack(pady=5)
         
         result_notebook = ttk.Notebook(result_frame)
         
@@ -439,7 +424,7 @@ class ForensicGUI:
         btn_frame_logs_tab = ttk.Frame(self.logs_tab) # Use a different name
         btn_frame_logs_tab.pack(pady=10)
         
-        ttk.Button(btn_frame_logs_tab, text="Export All Collected Data", command=self.export_all_logs).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame_logs_tab, text="Export All Collected logs", command=self.export_all_logs).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame_logs_tab, text="Generate Summary Report", command=self.generate_report).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame_logs_tab, text="Open Case Folder", command=self.open_case_folder).pack(side=tk.LEFT, padx=5)
         
@@ -876,7 +861,7 @@ class ForensicGUI:
         vol_id = list(self.selected_volumes.keys())[0]
         vol_data = self.selected_volumes[vol_id]
         selected_text_display = f"{vol_id} (Device: {vol_data['device']}, Instance: {vol_data['instance']['InstanceId']})"
-        self.status_text.insert(tk.END, f"Preparing forensic imaging for:\n{selected_text_display}\n\n")
+        self.status_text.insert(tk.END, f"Preparing volume imaging for:\n{selected_text_display}\n\n")
         self.status_text.config(state=tk.DISABLED)
 
         self.overall_progress['value'] = 0
@@ -905,7 +890,7 @@ class ForensicGUI:
                 'is_root_volume': is_root_volume,
                 'was_stopped_by_tool': False 
             }
-            self.log_message(f"Starting forensic imaging for volume {vol_id_to_process} (Size: {evidence_volume_size}GB) from instance {original_instance_data['InstanceId']}.", 'info')
+            self.log_message(f"Starting evidenc gatherint for volume {vol_id_to_process} (Size: {evidence_volume_size}GB) from instance {original_instance_data['InstanceId']}.", 'info')
             self.root.after(0, lambda: self.overall_progress.config(value=5))
 
             # 1. Create Forensic Instance
@@ -967,7 +952,7 @@ class ForensicGUI:
 
             # 4. Install Tools and Create Working Directory on Forensic Instance
             if self.cancellation_requested: raise InterruptedError("Process cancelled by user.")
-            self.log_message("Installing forensic tools (dc3dd, gpg) on forensic instance...", 'info')
+            self.log_message("Installing evidence gathering tools (dc3dd, gpg) on forensic instance...", 'info')
             self.install_dc3dd_and_gpg()
             self.root.after(0, lambda: self.step_progress.config(value=70)) 
 
@@ -1076,14 +1061,14 @@ class ForensicGUI:
             self.root.after(0, lambda: self.overall_progress.config(value=95))
             self.root.after(0, lambda: self.step_progress.config(value=100)) 
 
-            self.log_message("\nForensic imaging process completed successfully for the volume!", 'success')
+            self.log_message("\nVolume imaging process completed successfully for the volume!", 'success')
             self.log_message("WARNING: Use the provided passphrase to decrypt the .gpg image file.", 'warning')
 
         except InterruptedError: 
-            self.log_message("\nForensic process explicitly cancelled by user.", 'warning')
+            self.log_message("\nGathering process explicitly cancelled by user.", 'warning')
         except Exception as e:
             if not self.cancellation_requested: 
-                self.log_message(f"\nForensic process failed: {str(e)}", 'error')
+                self.log_message(f"\nGathering process failed: {str(e)}", 'error')
                 import traceback
                 self.log_message(traceback.format_exc(), 'error') 
         finally:
@@ -1159,11 +1144,13 @@ class ForensicGUI:
             # It will be re-enabled (to DISABLED) by cleanup_forensic_process when the process truly ends.
             self.cancel_btn.config(state=tk.DISABLED) 
             self.update_status(self.forensic_status_label, "Cancellation signal sent... Awaiting process termination and cleanup.", "warning")
+            self.root.after(10, lambda: None)  # Schedule a no-op to keep the event loop alive
 
             # Informational log based on start button state
             if self.start_btn['state'] != tk.DISABLED:
                 self.log_message("Note: Start button was not disabled, suggesting the main process might have already concluded or failed. Cleanup will still be attempted if applicable via the running thread's finally block.", "info")
-            
+                self.log_message("Note: Cancelling Process, the tool might be unresponsive for a while, do not close the tool", "critical_warning")
+
     # ===================== AWS HELPER METHODS =====================
     def is_root_volume(self, volume_id, instance_id):
         """Check if the specified volume is the root volume of the instance."""
@@ -1466,7 +1453,7 @@ class ForensicGUI:
             
             if exit_status != 0:
                 raise Exception(f"Command '{current_command}' failed with exit status {exit_status}")
-        self.log_message("Forensic tools (dc3dd, gpg) installation completed.", 'success')
+        self.log_message("Evidence Gathering tools (dc3dd, gpg) installation completed.", 'success')
 
     def create_working_directory(self):
         """Create working directory on remote instance"""
