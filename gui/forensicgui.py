@@ -1041,7 +1041,13 @@ class ForensicGUI:
             ) if local_encrypted_image_path else None
             self.log_message(f"SHA256 (Local Downloaded Encrypted): {downloaded_encrypted_hash_local or 'N/A'}", 'info')
             self.root.after(0, lambda: self.step_progress.config(value=100)) 
-            
+
+            # --- YIELD TO GUI EVENT LOOP TO PREVENT FREEZE ---
+            self.root.after(0, lambda: None)
+            time.sleep(0.1)
+            self.root.update_idletasks()
+            # -------------------------------------------------
+
             passphrase_commitment = hashlib.sha256(self.passphrase_entry.get().encode()).hexdigest()
             
             dc3dd_stderr_content_for_coc = ""
@@ -1912,7 +1918,7 @@ class ForensicGUI:
                                 elapsed = current_time - self.start_time
                                 speed = self.transferred / elapsed if elapsed > 0 else 0
                                 speed_mbps = (speed * 8) / (1024 * 1024) 
-                                self.log_func(f"\rDL {self.file_display_name}: {percent:.1f}% ({self.transferred/(1024*1024):.2f}/{self.total_bytes/(1024*1024):.2f} MB) @ {speed_mbps:.2f} Mbps", 'info', timestamp=False, newline=False)
+                                self.log_func(f"\rDL {self.file_display_name}: {percent:.1f}% ({self.transferred/(1024*1024):.2f}/{self.total_bytes/(1024*1024):.2f} MB) @ {speed_mbps:.2f} Mbps\n", 'info', timestamp=False, newline=False)
                                 self.last_logged_percent = int(percent)
                                 if self.transferred == self.total_bytes:
                                      self.log_func("", 'info', timestamp=False, newline=True) 
