@@ -1160,26 +1160,69 @@ class ForensicGUI:
         self.cancellation_requested = False 
         self.forensic_instance = None
         self.current_volume_original_state = None
+        self.sftp_client = None  # Add this to track active SFTP client
+
 
     def cancel_process(self):
-        """Attempt to cancel the forensic process."""
+        """Attempt to cancel the forensic process with forceful termination of SFTP."""
         if messagebox.askyesno("Confirm Cancel", 
-                               "Are you sure you want to request cancellation of the forensic process? "
-                               "If a process is running, it will attempt to stop and clean up."):
+                        "Are you sure you want to request cancellation of the forensic process? "
+                        "If a process is running, it will attempt to stop and clean up."):
+            messagebox.showwarning("WARNING!","NOTE: CANCELLING PROCESS, THE TOOL MIGHT BE UNRESPONSIVE FOR A WHILE. DO NOT CLOSE THE TOOL!")
+            self.log_message("CANCELLATION REQUESTED BY USER - Forcefully stopping processes...", 'warning')
+            self.log_message("NOTE: CANCELLING PROCESS, THE TOOL MIGHT BE UNRESPONSIVE FOR A WHILE. DO NOT CLOSE THE TOOL!", "critical_warning")      
+
+            self.cancellation_requested = True
+
             
-            self.cancellation_requested = True # Always set the flag
-            self.log_message("CANCELLATION REQUESTED BY USER. Active process (if any) should stop and clean up.", 'warning')
+            # Disable cancel button immediately
+            self.cancel_btn.config(state=tk.DISABLED)
             
-            # Disable cancel button to prevent multiple clicks during this attempt.
-            # It will be re-enabled (to DISABLED) by cleanup_forensic_process when the process truly ends.
-            self.cancel_btn.config(state=tk.DISABLED) 
-            self.update_status(self.forensic_status_label, "Cancellation signal sent... Awaiting process termination and cleanup.", "warning")
-            self.root.after(10, lambda: None)  # Schedule a no-op to keep the event loop alive
+            # Show cancellation progress
+            self.overall_progress.config(value=0)
+            self.step_progress.config(value=0)
+            
+            def update_cancel_progress():
+                if self.cancellation_requested:
+                    current = self.step_progress['value']
+                    if current < 100:
+                        self.step_progress['value'] = current + 1
+                        self.update_status(self.forensic_status_label, f"Cancelling... {int(current)}%", "warning")
+                        self.root.after(50, update_cancel_progress)  # Update every 50ms
+                    
+            update_cancel_progress()
+
+            def perform_cancellation():
+                try:
+                    # Force close any active SFTP sessions
+                    if hasattr(self, 'ssh_client') and self.ssh_client:
+                        for attr in dir(self.ssh_client):
+                            if 'sftp' in attr.lower():
+                                try:
+                                    sftp_obj = getattr(self.ssh_client, attr)
+                                    if hasattr(sftp_obj, 'close'):
+                                        sftp_obj.close()
+                                except Exception:
+                                    pass
+                        
+                        # Force close SSH transport
+                        if self.ssh_client.get_transport():
+                            self.ssh_client.get_transport().close()
+                            self.ssh_client.close()
+                        self.log_message("Forcefully closed SSH and SFTP connections.", 'warning')
+                except Exception as e:
+                    self.log_message(f"Error during forced SSH/SFTP shutdown: {e}", 'error')
+
+                # Schedule cleanup
+                self.root.after(1, self.cleanup_forensic_process)
+                self.update_status(self.forensic_status_label, "Cleanup in progress...", "warning")
+
+            # Run cancellation in a separate thread
+            threading.Thread(target=perform_cancellation, daemon=True).start()
 
             # Informational log based on start button state
             if self.start_btn['state'] != tk.DISABLED:
-                self.log_message("Note: Start button was not disabled, suggesting the main process might have already concluded or failed. Cleanup will still be attempted if applicable via the running thread's finally block.", "info")
-                self.log_message("Note: Cancelling Process, the tool might be unresponsive for a while, do not close the tool", "critical_warning")
+                self.log_message("Note: Start button was not disabled, suggesting the main process might have already concluded or failed. Cleanup will still be attempted if applicable.", "info")
 
     # ===================== AWS HELPER METHODS =====================
     def is_root_volume(self, volume_id, instance_id):
