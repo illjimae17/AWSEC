@@ -1047,15 +1047,29 @@ class ForensicGUI:
             self.root.update_idletasks()
             # -------------------------------------------------
 
+            # Yield to GUI event loop before starting hash calculation
+            self.root.update_idletasks()
             passphrase_commitment = hashlib.sha256(self.passphrase_entry.get().encode()).hexdigest()
+            # Update GUI to show we're processing the log file
+            self.log_message("Processing dc3dd log file...", 'info')
+            self.root.update_idletasks()
             
             dc3dd_stderr_content_for_coc = ""
             local_stderr_log_path = downloaded_file_paths.get(output_log_path_for_dc3dd_stderr) 
             if local_stderr_log_path and os.path.exists(local_stderr_log_path):
+                # Process log file in chunks to prevent GUI freeze
+                chunks = []
                 with open(local_stderr_log_path, 'r', errors='ignore') as f_log_coc:
-                    dc3dd_stderr_content_for_coc = f_log_coc.read()
-            elif not local_stderr_log_path : 
-                 dc3dd_stderr_content_for_coc = self.get_remote_file_content(output_log_path_for_dc3dd_stderr) or "Could not retrieve dc3dd log content."
+                    while True:
+                        chunk = f_log_coc.read(8192)  # Read 8KB at a time
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                        self.root.update_idletasks()  # Yield to GUI
+                        dc3dd_stderr_content_for_coc = ''.join(chunks)
+            elif not local_stderr_log_path:
+                dc3dd_stderr_content_for_coc = self.get_remote_file_content(output_log_path_for_dc3dd_stderr) or "Could not retrieve dc3dd log content."
+                self.root.update_idletasks() # Yield after remote file access
 
             coc_details = self.export_coc_logs(
                 investigator=self.investigator,
@@ -1077,10 +1091,8 @@ class ForensicGUI:
             self.log_message(f"Chain of Custody generated for Case ID: {coc_details['case_id']}", 'success')
             self.root.after(0, lambda: self.overall_progress.config(value=95))
             self.root.after(0, lambda: self.step_progress.config(value=100)) 
-
-            self.log_message("\nVolume imaging process completed successfully for the volume!", 'success')
+            self.log_message("\rVolume imaging process completed successfully for the volume!", 'success')
             self.log_message("WARNING: Use the provided passphrase to decrypt the .gpg image file.", 'warning')
-
 
         except InterruptedError: 
             self.log_message("\nGathering process explicitly cancelled by user.", 'warning')
