@@ -11,7 +11,6 @@ import json
 import hashlib
 import queue
 # from PIL import Image, ImageTk # PIL/Pillow is not used in the current version
-import zipfile
 import subprocess
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
@@ -1168,10 +1167,10 @@ class ForensicGUI:
         if messagebox.askyesno("Confirm Cancel", 
                         "Are you sure you want to request cancellation of the forensic process? "
                         "If a process is running, it will attempt to stop and clean up."):
-            messagebox.showwarning("WARNING!","NOTE: CANCELLING PROCESS, THE TOOL MIGHT BE UNRESPONSIVE FOR A WHILE. DO NOT CLOSE THE TOOL!")
+            messagebox.showwarning("WARNING!","CANCELLING THE PROCESS, THE TOOL MIGHT BE UNRESPONSIVE FOR A WHILE. DO NOT CLOSE THE TOOL!")
             self.log_message("CANCELLATION REQUESTED BY USER - Forcefully stopping processes...", 'warning')
             self.log_message("NOTE: CANCELLING PROCESS, THE TOOL MIGHT BE UNRESPONSIVE FOR A WHILE. DO NOT CLOSE THE TOOL!", "critical_warning")      
-
+            
             self.cancellation_requested = True
 
             
@@ -1193,6 +1192,7 @@ class ForensicGUI:
             update_cancel_progress()
 
             def perform_cancellation():
+                self.update_status(self.forensic_status_label, "Cleanup in progress...", "warning")
                 try:
                     # Force close any active SFTP sessions
                     if hasattr(self, 'ssh_client') and self.ssh_client:
@@ -1215,14 +1215,14 @@ class ForensicGUI:
 
                 # Schedule cleanup
                 self.root.after(1, self.cleanup_forensic_process)
-                self.update_status(self.forensic_status_label, "Cleanup in progress...", "warning")
-
+                self.update_status(self.forensic_status_label,"Sucessfully cancelled forensic process.", "success")
             # Run cancellation in a separate thread
             threading.Thread(target=perform_cancellation, daemon=True).start()
-
+            
             # Informational log based on start button state
             if self.start_btn['state'] != tk.DISABLED:
                 self.log_message("Note: Start button was not disabled, suggesting the main process might have already concluded or failed. Cleanup will still be attempted if applicable.", "info")
+
 
     # ===================== AWS HELPER METHODS =====================
     def is_root_volume(self, volume_id, instance_id):
@@ -1578,7 +1578,6 @@ class ForensicGUI:
                         device_line_to_parse = lines[-1] 
                         self.log_message(f"Attempting to parse device from lsblk line (lines[-2]): '{device_line_to_parse}'", "info", timestamp=False)
                         device_name_short = device_line_to_parse.split(" ")[0].strip()
-                        print(device_name_short)
 
                         if not device_name_short:
                              self.log_message("Parsed device_name_short is empty. Will retry if attempts remain.", "warning")
