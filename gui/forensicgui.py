@@ -99,6 +99,9 @@ class ForensicGUI:
         
     def show_login(self):
         """Show login dialog"""
+        self.root.lift()
+        self.root.attributes('-topmost', True)
+        self.root.after(500, lambda: self.root.attributes('-topmost', False))
         login = LoginDialog(self.root, "AWS Login")
         if login.result:
             access_key, secret_key, region, investigator_name = login.result
@@ -740,6 +743,7 @@ class ForensicGUI:
                 self.root.after(0, lambda: self.notebook.select(0)) 
                 self.root.after(0, self.refresh_instances)
             except Exception as e:
+                # messagebox.showwarning("Error, invalid credentials", f"Invalid AWS credentials or region: {str(e)}")
                 self.log_message(f"Error validating credentials: {str(e)}", 'error')
                 self.root.after(0, lambda: messagebox.showerror("Login Failed", f"Invalid AWS credentials or region: {str(e)}"))
                 self.root.after(0, self.show_login) # Re-show login on failure
