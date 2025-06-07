@@ -24,6 +24,12 @@ class ForensicGUI:
     def __init__(self, root):
         self.cancellation_requested = False
         self.root = root
+        # Set window icon
+        try:
+            # Set icon for main window
+            self.root.iconbitmap("LOGO.ico")
+        except Exception:
+            pass  # Ignore if icon file is missing or on non-Windows platforms
         self.root.title("AWS EC2 Evidence Gathering Tool")
         self.root.geometry("1200x800")
         self.root.minsize(1000, 700)
