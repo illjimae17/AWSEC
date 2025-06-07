@@ -106,7 +106,7 @@ class ForensicGUI:
     def show_login(self):
         """Show login dialog"""
         self.root.lift()
-        self.root.attributes('-topmost', True)
+        # self.root.attributes('-topmost', True)
         self.root.after(500, lambda: self.root.attributes('-topmost', False))
         login = LoginDialog(self.root, "AWS Login")
         if login.result:
@@ -728,10 +728,11 @@ class ForensicGUI:
             messagebox.showerror("Input Error", "All login fields are required.")
             self.show_login() # Re-show login
             return
-            
+
         self.show_loading_screen("Validating AWS credentials...")
         
         def validate_thread():
+            session= None
             try:
                 session = boto3.Session(
                     aws_access_key_id=access_key,
@@ -751,8 +752,14 @@ class ForensicGUI:
             except Exception as e:
                 # messagebox.showwarning("Error, invalid credentials", f"Invalid AWS credentials or region: {str(e)}")
                 self.log_message(f"Error validating credentials: {str(e)}", 'error')
-                self.root.after(0, lambda: messagebox.showerror("Login Failed", f"Invalid AWS credentials or region: {str(e)}"))
-                self.root.after(0, self.show_login) # Re-show login on failure
+                def show_error_then_login(error):
+                    self.root.lift()
+                    self.root.attributes('-topmost', True)
+                    messagebox.showerror("Login Failed", f"Invalid AWS credentials or region: {str(error)}")
+                    self.root.attributes('-topmost', False)
+                    self.show_login()  # Show login only after error dialog is closed
+                self.root.after(0, lambda: show_error_then_login(e))
+                self.root.after(0, show_error_then_login)
             finally:
                 self.root.after(0, self.hide_loading_screen)
                 self.root.lift()
