@@ -899,7 +899,6 @@ class ForensicGUI:
 
     def run_forensic_process(self):
         """Core forensic process logic for the single selected volume."""
-        raw_image_hash_on_forensic = "N/A_Calculation_Pending" # Initialize
         try:
             # Get the single selected volume (already validated in start_forensic_process)
             vol_id_to_process = list(self.selected_volumes.keys())[0]
@@ -989,38 +988,26 @@ class ForensicGUI:
             self.log_message(f"Working directory {working_dir} created on forensic instance.", "info")
             self.root.after(0, lambda: self.overall_progress.config(value=40)) 
 
-            # 5. Create Forensic Image (dc3dd) - This method no longer returns hash
+            # 5. Create Forensic Image, Hash, and Encrypt via Pipeline
             if self.cancellation_requested: raise InterruptedError("Process cancelled by user.")
+            self.log_message("Starting imaging and encryption pipeline...", 'info')
+            pipeline_results = self.run_imaging_and_encryption_pipeline(
+                volume_id_to_image=vol_id_to_process,
+                working_dir=working_dir,
+                passphrase=self.passphrase_entry.get()
+            )
+            if not pipeline_results:
+                raise Exception("Imaging and encryption pipeline failed.")
+
+            raw_image_hash_on_forensic = pipeline_results["raw_hash"]
+            encrypted_image_path = pipeline_results["encrypted_image_path"]
+            raw_hash_output_path = pipeline_results["raw_hash_output_path"]
             
-            raw_image_path = f"{working_dir}/{vol_id_to_process}.img"
-            output_log_path_for_dc3dd_stderr = f"{working_dir}/{vol_id_to_process}.dc3dd_stderr.log" 
-            
-            self.log_message(f"Starting dc3dd imaging for {vol_id_to_process} to {raw_image_path}.", 'info') 
-            self.run_dc3dd(vol_id_to_process, working_dir, raw_image_path, output_log_path_for_dc3dd_stderr) 
-            self.log_message(f"dc3dd imaging completed for {raw_image_path}.", 'success')
-            self.root.after(0, lambda: self.overall_progress.config(value=60))
-
-            # 5b. Calculate hash of raw image using sha256sum
-            if self.cancellation_requested: raise InterruptedError("Process cancelled by user.")
-            self.log_message(f"Calculating SHA256 hash of raw image {raw_image_path} on forensic instance...", 'info')
-            raw_image_hash_on_forensic = self.calculate_sha256_remote(raw_image_path)
-            if not raw_image_hash_on_forensic or "N/A" in raw_image_hash_on_forensic:
-                self.log_message(f"Failed to calculate SHA256 for raw image {raw_image_path}. Hash will be marked N/A.", 'error')
-                raw_image_hash_on_forensic = "N/A_SHA256SUM_FAILED"
-            else:
-                self.log_message(f"SHA256 (Raw Image on Forensic via sha256sum): {raw_image_hash_on_forensic}", 'success')
-            self.root.after(0, lambda: self.overall_progress.config(value=65))
-
-
-            # 6. Encrypt Image
-            if self.cancellation_requested: raise InterruptedError("Process cancelled by user.")
-            self.log_message(f"Encrypting image {raw_image_path}...", 'info')
-            encrypted_image_path = f"{raw_image_path}.gpg"
-            self.gpg_encrypt_symmetric(raw_image_path, self.passphrase_entry.get(), encrypted_image_path)
-            self.log_message(f"Image encrypted: {encrypted_image_path}", 'success')
+            self.log_message(f"Imaging and encryption pipeline completed.", 'success')
+            self.log_message(f"SHA256 (Raw Stream): {raw_image_hash_on_forensic}", 'success')
             self.root.after(0, lambda: self.overall_progress.config(value=75))
 
-            # 7. Get Encrypted Image Hash (on forensic instance)
+            # 6. Get Encrypted Image Hash (on forensic instance)
             if self.cancellation_requested: raise InterruptedError("Process cancelled by user.")
             self.log_message("Calculating hash of encrypted image on forensic instance...", 'info')
             encrypted_image_hash_on_forensic = self.calculate_sha256_remote(encrypted_image_path)
@@ -1030,12 +1017,12 @@ class ForensicGUI:
             self.log_message(f"SHA256 (Encrypted on Forensic): {encrypted_image_hash_on_forensic}", 'info')
             self.root.after(0, lambda: self.step_progress.config(value=90)) 
 
-            # 8. Download Evidence
+            # 7. Download Evidence
             if self.cancellation_requested: raise InterruptedError("Process cancelled by user.")
             self.log_message(f"Downloading evidence files for {vol_id_to_process} from forensic instance...", 'info')
             files_to_download = {
                 encrypted_image_path: f"{vol_id_to_process}.img.gpg",
-                output_log_path_for_dc3dd_stderr: f"{vol_id_to_process}.dc3dd_stderr.log", 
+                raw_hash_output_path: f"{vol_id_to_process}.sha256",
             }
             downloaded_file_paths = self.download_evidences_sftp(files_to_download, vol_id_to_process)
             if not downloaded_file_paths.get(encrypted_image_path): 
@@ -1043,7 +1030,7 @@ class ForensicGUI:
             self.log_message("Evidence files downloaded.", 'success')
             self.root.after(0, lambda: self.overall_progress.config(value=90))
             
-            # 9. Generate Chain of Custody
+            # 8. Generate Chain of Custody
             if self.cancellation_requested: raise InterruptedError("Process cancelled by user.")
             self.log_message("Generating Chain of Custody documentation...", 'info') 
             self.root.after(0, lambda: self.step_progress.config(value=0)) 
@@ -1064,30 +1051,8 @@ class ForensicGUI:
             self.root.update_idletasks()
             # -------------------------------------------------
 
-            # Yield to GUI event loop before starting hash calculation
-            self.root.update_idletasks()
             passphrase_commitment = hashlib.sha256(self.passphrase_entry.get().encode()).hexdigest()
-            # Update GUI to show we're processing the log file
-            self.log_message("Processing dc3dd log file...", 'info')
-            self.root.update_idletasks()
             
-            dc3dd_stderr_content_for_coc = ""
-            local_stderr_log_path = downloaded_file_paths.get(output_log_path_for_dc3dd_stderr) 
-            if local_stderr_log_path and os.path.exists(local_stderr_log_path):
-                # Process log file in chunks to prevent GUI freeze
-                chunks = []
-                with open(local_stderr_log_path, 'r', errors='ignore') as f_log_coc:
-                    while True:
-                        chunk = f_log_coc.read(8192)  # Read 8KB at a time
-                        if not chunk:
-                            break
-                        chunks.append(chunk)
-                        self.root.update_idletasks()  # Yield to GUI
-                        dc3dd_stderr_content_for_coc = ''.join(chunks)
-            elif not local_stderr_log_path:
-                dc3dd_stderr_content_for_coc = self.get_remote_file_content(output_log_path_for_dc3dd_stderr) or "Could not retrieve dc3dd log content."
-                self.root.update_idletasks() # Yield after remote file access
-
             coc_details = self.export_coc_logs(
                 investigator=self.investigator,
                 source_instance_data=original_instance_data,
@@ -1100,8 +1065,8 @@ class ForensicGUI:
                     "encrypted_on_forensic": encrypted_image_hash_on_forensic,
                     "downloaded_encrypted_local": downloaded_encrypted_hash_local
                 },
-                downloaded_files_map=downloaded_file_paths, 
-                dc3dd_log_content=dc3dd_stderr_content_for_coc 
+                downloaded_files_map=downloaded_file_paths,
+                dc3dd_log_content=None  # dc3dd stderr is now part of the main log
             )
             if not coc_details:
                 raise Exception("Failed to generate Chain of Custody documentation.")
@@ -1347,7 +1312,7 @@ class ForensicGUI:
 
             # Calculate forensic instance root volume size
             # Ensure it's at least 30GB, or evidence_volume_size + 10GB, whichever is larger.
-            forensic_root_vol_size = int(evidence_volume_size_gb) + 15
+            forensic_root_vol_size = int(evidence_volume_size_gb) + 10
             self.log_message(f"Target evidence volume size: {evidence_volume_size_gb}GB. Forensic instance root volume will be {forensic_root_vol_size}GB.", "info")
 
 
@@ -1571,211 +1536,125 @@ class ForensicGUI:
         self.log_message(f"Working directory {working_dir} created/ensured on forensic instance.", 'info')
         return working_dir
 
-    def run_dc3dd(self, volume_id_to_image, working_dir, output_image_path, output_log_path):
+    def run_imaging_and_encryption_pipeline(self, volume_id_to_image, working_dir, passphrase):
         """
-        Run dc3dd to create forensic image using user-specified lsblk parsing with retries.
-        Saves dc3dd's stderr to output_log_path.
-        This method NO LONGER returns the hash. Hash calculation is done separately.
+        Runs a piped command to image, hash, and encrypt in one go.
+        sudo dc3dd | tee >(sha256sum > hash.txt) | gpg > image.gpg
         """
+        # 1. Discover device path
         actual_device_path_for_dc3dd = None
         lsblk_command = 'lsblk -o name,size -lnd'
-        max_lsblk_retries = 3 
-        lsblk_retry_delay_seconds = 10 
+        max_lsblk_retries = 3
+        lsblk_retry_delay_seconds = 10
 
-        self.log_message(f"Attempting to identify device for imaging volume '{volume_id_to_image}' using '{lsblk_command}' (user-specified method) with retries...", 'info')
-
+        self.log_message(f"Attempting to identify device for imaging volume '{volume_id_to_image}' using '{lsblk_command}' with retries...", 'info')
         for attempt in range(max_lsblk_retries):
-            if self.cancellation_requested:
-                raise InterruptedError("Device discovery cancelled by user.")
+            if self.cancellation_requested: raise InterruptedError("Device discovery cancelled by user.")
             
             self.log_message(f"lsblk attempt {attempt + 1}/{max_lsblk_retries}...", 'info')
             stdin, stdout, stderr_lsblk = self.ssh_client.exec_command(lsblk_command, timeout=30)
             exit_status_lsblk = stdout.channel.recv_exit_status()
             lsblk_output_raw = stdout.read().decode(errors='ignore').strip()
-            lsblk_error_raw = stderr_lsblk.read().decode(errors='ignore').strip()
 
-            self.log_message(f"Full lsblk output ('{lsblk_command}'):\n{lsblk_output_raw if lsblk_output_raw else '<empty>'}", "info", timestamp=False)
-            if lsblk_error_raw:
-                self.log_message(f"lsblk stderr: {lsblk_error_raw}", "warning", timestamp=False)
-
-            if exit_status_lsblk == 0 and lsblk_output_raw:
-                lines = lsblk_output_raw.split("\n")
-                self.log_message(f"lsblk output split into {len(lines)} lines.", "info", timestamp=False)
-
-                if len(lines) >= 2:
-                    try:
-                        device_line_to_parse = lines[-1] 
-                        self.log_message(f"Attempting to parse device from lsblk line (lines[-2]): '{device_line_to_parse}'", "info", timestamp=False)
-                        device_name_short = device_line_to_parse.split(" ")[0].strip()
-
-                        if not device_name_short:
-                             self.log_message("Parsed device_name_short is empty. Will retry if attempts remain.", "warning")
-                        else:
-                            actual_device_path_for_dc3dd = f"/dev/{device_name_short}"
-                            # self.log_message(f"Using device path: {actual_device_path_for_dc3dd} (derived from '{lsblk_command}', line: '{device_line_to_parse}'). WARNING: This discovery method is fragile.", "critical_warning")
-                            break 
-                    
-                    except IndexError:
-                        self.log_message(f"Error parsing lsblk output (IndexError on lines[-2].split). Output was: {lsblk_output_raw}. Will retry if attempts remain.", "warning")
-                    except Exception as e_parse:
-                        self.log_message(f"Unexpected error parsing lsblk output: {e_parse}. Output: {lsblk_output_raw}. Will retry if attempts remain.", "warning")
-                
-                elif len(lines) == 1:
-                    self.log_message(f"lsblk output only one line: '{lines[0]}'. This is likely the root device. The parsing method (second to last line) cannot identify an attached volume. Will retry if attempts remain.", "warning")
-                else:
-                    self.log_message(f"lsblk output was empty or too short after splitting lines. Raw output: '{lsblk_output_raw}'. Will retry if attempts remain.", "warning")
-            else:
-                self.log_message(f"lsblk command ('{lsblk_command}') failed or produced no output. Exit: {exit_status_lsblk}, Stderr: {lsblk_error_raw}. Will retry if attempts remain.", 'warning')
-
+            if exit_status_lsblk == 0 and lsblk_output_raw and len(lsblk_output_raw.splitlines()) >= 2:
+                device_line_to_parse = lsblk_output_raw.splitlines()[-1]
+                device_name_short = device_line_to_parse.split(" ")[0].strip()
+                if device_name_short:
+                    actual_device_path_for_dc3dd = f"/dev/{device_name_short}"
+                    break
+            
             if not actual_device_path_for_dc3dd and attempt < max_lsblk_retries - 1:
                 self.log_message(f"Device not identified. Retrying lsblk in {lsblk_retry_delay_seconds} seconds...", 'info')
                 time.sleep(lsblk_retry_delay_seconds)
-            elif actual_device_path_for_dc3dd: 
-                break 
-        
+
         if not actual_device_path_for_dc3dd:
-            raise Exception("Device path for dc3dd could not be determined after multiple retries using the specified fragile method.")
-
-        dc3dd_command_str = f"sudo dc3dd if={actual_device_path_for_dc3dd} of={output_image_path} hash=sha256 verb=on" # Keep hash=sha256 for dc3dd's own log
-        self.log_message(f"Executing dc3dd: {dc3dd_command_str}", 'info', timestamp=False)
+            raise Exception("Device path for imaging could not be determined after multiple retries.")
         
-        stdin, stdout_dc3dd, stderr_dc3dd = self.ssh_client.exec_command(dc3dd_command_str)
-        dc3dd_channel = stdout_dc3dd.channel 
-        dc3dd_channel.setblocking(0)
+        # 2. Define file paths and construct the pipeline command
+        encrypted_image_path = f"{working_dir}/{volume_id_to_image}.img.gpg"
+        raw_hash_output_path = f"{working_dir}/{volume_id_to_image}.sha256"
 
-        dc3dd_stderr_output_lines = []
-        last_dc3dd_progress_line = None
-        last_dc3dd_progress_display_time = 0
-        dc3dd_progress_log_interval = 3.0 # seconds
+        dc3dd_part = f"sudo dc3dd if={actual_device_path_for_dc3dd} verb=on"
+        tee_part = f"tee >(sha256sum > {raw_hash_output_path})"
+        gpg_part = (f"gpg --batch --yes --pinentry-mode loopback --passphrase '{passphrase}' "
+                    f"--symmetric --cipher-algo AES256 -o {encrypted_image_path}")
 
-        self.log_message("--- dc3dd process started, monitoring stderr ---", "info", timestamp=True)
+        # Use bash -c 'set -o pipefail; ...' to ensure failure in any part of the pipe fails the whole command
+        pipeline_command_str = f"bash -c 'set -o pipefail; {dc3dd_part} | {tee_part} | {gpg_part}'"
 
-        while not dc3dd_channel.exit_status_ready():
+        self.log_message(f"Executing pipeline: {pipeline_command_str.replace(passphrase, '********')}", 'info', timestamp=False)
+
+        # 3. Execute and monitor the command
+        stdin, stdout, stderr = self.ssh_client.exec_command(pipeline_command_str, timeout=21600) # 6 hour timeout
+        channel = stdout.channel
+        channel.setblocking(0)
+
+        last_progress_line = None
+        last_progress_display_time = 0
+        progress_log_interval = 3.0
+
+        self.log_message("--- Imaging/Encryption pipeline started, monitoring stderr ---", "info", timestamp=True)
+
+        while not channel.exit_status_ready():
             if self.cancellation_requested:
-                self.log_message("Cancellation requested during dc3dd. Attempting to stop by sending SIGINT...", "warning")
-                try:
-                    if dc3dd_channel.active and hasattr(dc3dd_channel, 'send_signal'):
-                        dc3dd_channel.send_signal("INT") 
-                        self.log_message("SIGINT sent to remote dc3dd process channel.", "info")
-                        time.sleep(1) 
-                    else:
-                        self.log_message("Channel not active or send_signal not available for SIGINT.", "warning")
-                except Exception as e_signal:
-                    self.log_message(f"Error sending SIGINT to dc3dd process: {e_signal}", "error")
-                
-                self.log_message("Closing SSH channels for dc3dd command after SIGINT attempt.", "info")
-                try:
-                    if dc3dd_channel.active: dc3dd_channel.close()
-                except Exception as e_close_channel:
-                     self.log_message(f"Error closing main dc3dd channel: {e_close_channel}", "warning")
-
-                termination_wait_start = time.time()
-                while time.time() - termination_wait_start < 3: 
-                    if dc3dd_channel.exit_status_ready(): 
-                        self.log_message(f"dc3dd process exited after cancellation. Exit status: {dc3dd_channel.recv_exit_status()}", "info")
-                        break
-                    time.sleep(0.5)
-                else:
-                    self.log_message("dc3dd process did not report exit status quickly after cancellation attempt.", "warning")
-                
-                raise InterruptedError("dc3dd cancelled by user request.")
+                raise InterruptedError("Pipeline cancelled by user request.")
 
             try:
-                if dc3dd_channel.recv_stderr_ready():
-                    chunk = dc3dd_channel.recv_stderr(4096)
-                    if chunk:
-                        decoded_chunk = chunk.decode(errors='ignore')
-                        for sub_line_raw in decoded_chunk.replace('\r\n', '\n').replace('\r', '\n').splitlines():
-                            sub_line = sub_line_raw.strip()
-                            if not sub_line: continue
+                if channel.recv_stderr_ready():
+                    chunk = channel.recv_stderr(4096).decode(errors='ignore')
+                    for sub_line_raw in chunk.replace('\r', '\n').splitlines():
+                        sub_line = sub_line_raw.strip()
+                        if not sub_line: continue
 
-                            dc3dd_stderr_output_lines.append(sub_line + "\n") # Store all lines for the log file
-
-                            # Check if it's a progress line (contains %, copied, s, M/s or K/s)
-                            is_progress_line = ("%" in sub_line and 
-                                                "copied" in sub_line and 
-                                                ("M/s" in sub_line or "K/s" in sub_line or "B/s" in sub_line) and
-                                                " s," in sub_line) # More specific check for progress
-
-                            if is_progress_line:
-                                last_dc3dd_progress_line = sub_line # Store the latest progress
-                                # Update GUI progress bar immediately
-                                try:
-                                    percent_str = sub_line.split('%')[0].split('(')[-1].strip()
-                                    progress_percent = int(percent_str)
-                                    self.root.after(0, lambda p=progress_percent: self.step_progress.config(value=p))
-                                except (ValueError, IndexError):
-                                    pass 
-                            else: # Not a typical progress line, log it immediately
-                                if last_dc3dd_progress_line: # Log any pending progress line first
-                                    self.log_message(last_dc3dd_progress_line, 'info', timestamp=False, newline=True)
-                                    last_dc3dd_progress_line = None
-                                    last_dc3dd_progress_display_time = time.time() # Reset time as we logged
-                                self.log_message(sub_line, 'info', timestamp=False, newline=True)
+                        is_progress_line = ("%" in sub_line and "copied" in sub_line)
+                        if is_progress_line:
+                            last_progress_line = sub_line
+                            try:
+                                percent_str = sub_line.split('%')[0].split('(')[-1].strip()
+                                self.root.after(0, lambda p=int(percent_str): self.step_progress.config(value=p))
+                            except (ValueError, IndexError): pass
+                        else:
+                            if last_progress_line:
+                                self.log_message(last_progress_line, 'info', timestamp=False)
+                                last_progress_line = None
+                            self.log_message(sub_line, 'info', timestamp=False)
                 
-                # Log stored progress line if interval passed
-                if last_dc3dd_progress_line and (time.time() - last_dc3dd_progress_display_time >= dc3dd_progress_log_interval):
-                    self.log_message(last_dc3dd_progress_line, 'info', timestamp=False, newline=True)
-                    last_dc3dd_progress_display_time = time.time()
-                    last_dc3dd_progress_line = None # Clear after logging
-
-                if dc3dd_channel.recv_ready(): 
-                    stdout_chunk = dc3dd_channel.recv(4096).decode(errors='ignore')
-                    if stdout_chunk.strip():
-                         self.log_message(f"dc3dd stdout (unexpected): {stdout_chunk.strip()}", "warning", timestamp=False)
+                if last_progress_line and (time.time() - last_progress_display_time > progress_log_interval):
+                    self.log_message(last_progress_line, 'info', timestamp=False)
+                    last_progress_display_time = time.time()
+                    last_progress_line = None
                 
-                if not dc3dd_channel.recv_stderr_ready() and not dc3dd_channel.recv_ready():
-                    time.sleep(0.1) 
-            
-            except BlockingIOError: 
-                time.sleep(0.1)
+                if not channel.recv_stderr_ready(): time.sleep(0.1)
+
+            except BlockingIOError: time.sleep(0.1)
             except Exception as e_stderr_read:
-                self.log_message(f"Exception while reading dc3dd streams: {e_stderr_read}", "error")
+                self.log_message(f"Exception while reading pipeline streams: {e_stderr_read}", "error")
                 time.sleep(0.5)
-
-        # After loop, if there's a pending progress line, log it
-        if last_dc3dd_progress_line:
-            self.log_message(last_dc3dd_progress_line, 'info', timestamp=False, newline=True)
-
-        # Log last few lines of dc3dd output before exit status
-        full_stderr_output_from_dc3dd = "".join(dc3dd_stderr_output_lines)
-        if full_stderr_output_from_dc3dd: # Check if there's any output
-            # Iterate through stored lines to find the actual last few non-empty ones
-            actual_last_lines = [line.strip() for line in full_stderr_output_from_dc3dd.splitlines() if line.strip()]
-            for line in actual_last_lines[-5:]: 
-                self.log_message(line, 'info', timestamp=False, newline=True)
-
-
-        exit_status_dc3dd_val = dc3dd_channel.recv_exit_status()
-        self.log_message(f"--- dc3dd process completed exit_status: {exit_status_dc3dd_val} ---", "info", timestamp=True)
         
-        # Read any remaining stderr/stdout after exit (should be minimal if loop was thorough)
-        while dc3dd_channel.recv_stderr_ready():
-            chunk = dc3dd_channel.recv_stderr(4096).decode(errors='ignore')
-            if chunk.strip(): dc3dd_stderr_output_lines.append(chunk) # Append for full log
-        while dc3dd_channel.recv_ready():
-            chunk = dc3dd_channel.recv(4096).decode(errors='ignore')
-            if chunk.strip(): self.log_message(f"dc3dd stdout (remaining after exit): {chunk.strip()}", 'warning', timestamp=False)
+        if last_progress_line: self.log_message(last_progress_line, 'info', timestamp=False)
 
-        full_stderr_output_from_dc3dd = "".join(dc3dd_stderr_output_lines) # Reconstruct if anything new was read
+        exit_status = channel.recv_exit_status()
+        self.log_message(f"--- Pipeline completed exit_status: {exit_status} ---", "info", timestamp=True)
         
-        sftp = None
-        try:
-            sftp = self.ssh_client.open_sftp()
-            with sftp.file(output_log_path, 'w') as f_log:
-                f_log.write(full_stderr_output_from_dc3dd)
-            self.log_message(f"dc3dd stderr content saved to remote log: {output_log_path}", "info")
-        except Exception as e_sftp_log:
-            self.log_message(f"Failed to save dc3dd stderr to remote log {output_log_path}: {e_sftp_log} (SFTP Error: {type(e_sftp_log).__name__})", "error")
-        finally:
-            if sftp: sftp.close()
+        if exit_status != 0:
+            error_output = stderr.read().decode(errors='ignore').strip()
+            self.log_message(f"Pipeline failed. Stderr: {error_output}", 'error')
+            raise Exception(f"Imaging/Encryption pipeline failed with exit status {exit_status}.")
 
-        if exit_status_dc3dd_val != 0:
-            self.log_message(f"dc3dd command failed with exit status {exit_status_dc3dd_val}. Stderr (first 500 chars): {full_stderr_output_from_dc3dd[:500]}...", 'error')
-            raise Exception(f"dc3dd command failed with exit status {exit_status_dc3dd_val}.")
-        
-        self.log_message(f"dc3dd imaging completed for output image: {output_image_path}", 'success')
-        return 
+        # 4. Retrieve the calculated hash
+        raw_hash = self.get_remote_file_content(raw_hash_output_path)
+        if raw_hash and len(raw_hash.split()) > 0:
+            raw_hash_on_forensic = raw_hash.split()[0]
+        else:
+            self.log_message("Failed to retrieve raw stream hash from remote file.", "error")
+            raw_hash_on_forensic = "N/A_Hash_File_Read_Error"
+
+        return {
+            "raw_hash": raw_hash_on_forensic,
+            "encrypted_image_path": encrypted_image_path,
+            "raw_hash_output_path": raw_hash_output_path
+        }
+
 
     def calculate_sha256_remote(self, remote_file_path):
         """Calculate SHA256 hash of a file on the remote instance."""
@@ -1970,11 +1849,8 @@ class ForensicGUI:
 
                         def sftp_callback(self, bytes_so_far, _total_bytes_unused): 
                             if self.get_cancellation_flag():
-                                # SFTP doesn't have a clean way to abort transfer from callback.
-                                # The main loop will catch InterruptedError.
-                                # We can log here that callback detected it.
                                 self.log_func(f"SFTP download for {self.file_display_name} detected cancellation in callback.", "warning", timestamp=True)
-                                return # Attempt to stop further processing in callback
+                                return 
 
                             self.transferred = bytes_so_far
                             current_time = time.time()
