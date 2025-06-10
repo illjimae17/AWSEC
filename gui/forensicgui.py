@@ -1066,7 +1066,6 @@ class ForensicGUI:
                     "downloaded_encrypted_local": downloaded_encrypted_hash_local
                 },
                 downloaded_files_map=downloaded_file_paths,
-                dc3dd_log_content=None  # dc3dd stderr is now part of the main log
             )
             if not coc_details:
                 raise Exception("Failed to generate Chain of Custody documentation.")
@@ -1074,7 +1073,7 @@ class ForensicGUI:
             self.root.after(0, lambda: self.overall_progress.config(value=95))
             self.root.after(0, lambda: self.step_progress.config(value=100)) 
             self.log_message("\rVolume imaging process completed successfully for the volume!", 'success')
-            self.log_message("WARNING: Use the provided passphrase to decrypt the .gpg image file.", 'warning')
+            self.log_message("WARNING: Use the inputted passphrase to decrypt the .gpg image file.", 'critical_warning')
 
         except InterruptedError: 
             self.log_message("\nGathering process explicitly cancelled by user.", 'warning')
@@ -1902,7 +1901,7 @@ class ForensicGUI:
             
     def export_coc_logs(self, investigator, source_instance_data, forensic_instance_data, 
                         volume_id, key_path_name, passphrase_commitment, hashes, 
-                        downloaded_files_map, dc3dd_log_content):
+                        downloaded_files_map):
         """Generate comprehensive Chain of Custody documentation."""
         if self.cancellation_requested:
             self.log_message("Chain of Custody generation cancelled before start.", "warning")
@@ -1942,19 +1941,13 @@ class ForensicGUI:
                     if h_forensic == h_local:
                         hash_verification_notes.append("SUCCESS: Encrypted image hash matches between forensic instance and local download.")
                         hash_match_status = "Verified"
+                        self.log_message("The Hashes is Sucessfully Verified", "critical_warning")
                     else:
                         hash_verification_notes.append("ERROR: Encrypted image hash MISMATCH between forensic instance and local download.")
                 else:
                     hash_verification_notes.append("WARNING: One or both encrypted hashes (forensic/local) are marked N/A, direct comparison not possible.")
             else:
                 hash_verification_notes.append("WARNING: Could not verify encrypted image hash between forensic and local (one or both hashes missing entirely).")
-
-
-            local_dc3dd_log_gui_path = None
-            for remote_p, local_p in downloaded_files_map.items():
-                if remote_p.endswith('.dc3dd_stderr.log'): 
-                    local_dc3dd_log_gui_path = local_p
-                    break
 
 
             json_log_data = {
@@ -1985,7 +1978,6 @@ class ForensicGUI:
                     "encryptedImageLocalPath": local_encrypted_image_path,
                     "encryptedImageLocalSizeBytes": encrypted_size_local,
                     "hashVerificationNotes": hash_verification_notes,
-                    "dc3ddLogPath_Local": local_dc3dd_log_gui_path, 
                 },
                 "tooling": {
                     "imagingTool": "dc3dd (version assumed 7.x)", 
@@ -1996,13 +1988,6 @@ class ForensicGUI:
             json_path = os.path.join(coc_output_dir, f"{case_id}_coc.json")
             with open(json_path, 'w') as f:
                 json.dump(json_log_data, f, indent=4)
-            
-            if dc3dd_log_content and not local_dc3dd_log_gui_path:
-                fallback_log_path = os.path.join(coc_output_dir, f"{case_id}_dc3dd_stderr_content.log")
-                with open(fallback_log_path, 'w', errors='ignore') as f_log_fallback:
-                    f_log_fallback.write(dc3dd_log_content)
-                self.log_message(f"dc3dd stderr content also saved to {fallback_log_path}", "info")
-
 
             self.coc_data.append({
                 "case_id": case_id, "volume_id": volume_id, "status": "Collected", "timestamp": timestamp_long
