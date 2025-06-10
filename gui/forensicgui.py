@@ -1593,11 +1593,11 @@ class ForensicGUI:
         last_progress_display_time = 0
         progress_log_interval = 3.0
 
-        self.log_message("--- Imaging/Encryption pipeline started, monitoring stderr ---", "info", timestamp=True)
+        self.log_message("--- Imaging & Encryption process started, monitoring stderr ---", "info", timestamp=True)
 
         while not channel.exit_status_ready():
             if self.cancellation_requested:
-                raise InterruptedError("Pipeline cancelled by user request.")
+                raise InterruptedError("Process cancelled by user request.")
 
             try:
                 if channel.recv_stderr_ready():
@@ -1634,12 +1634,12 @@ class ForensicGUI:
         if last_progress_line: self.log_message(last_progress_line, 'info', timestamp=False)
 
         exit_status = channel.recv_exit_status()
-        self.log_message(f"--- Pipeline completed exit_status: {exit_status} ---", "info", timestamp=True)
+        self.log_message(f"--- Process completed exit_status: {exit_status} ---", "info", timestamp=True)
         
         if exit_status != 0:
             error_output = stderr.read().decode(errors='ignore').strip()
-            self.log_message(f"Pipeline failed. Stderr: {error_output}", 'error')
-            raise Exception(f"Imaging/Encryption pipeline failed with exit status {exit_status}.")
+            self.log_message(f"Imaging/Encryption process failed. Stderr: {error_output}", 'error')
+            raise Exception(f"Imaging/Encryption process failed with exit status {exit_status}.")
 
         # 4. Retrieve the calculated hash
         raw_hash = self.get_remote_file_content(raw_hash_output_path)
