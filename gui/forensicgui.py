@@ -1043,6 +1043,7 @@ class ForensicGUI:
                 self.step_progress 
             ) if local_encrypted_image_path else None
             self.log_message(f"SHA256 (Local Downloaded Encrypted): {downloaded_encrypted_hash_local or 'N/A'}", 'info')
+            self.log_message(f"Start Verifying Hashes and Generating Chain of Custody... (The tool might be unresponsive), DO NOT CLOSE THE TOOL!", 'critical_warning')
             self.root.after(0, lambda: self.step_progress.config(value=100)) 
 
             # --- YIELD TO GUI EVENT LOOP TO PREVENT FREEZE ---
@@ -1828,8 +1829,13 @@ class ForensicGUI:
                 
                 try:
                     file_size = sftp_main.stat(remote_path).st_size
-                    self.log_message(f"File size: {file_size / (1024*1024) if file_size else 0:.2f} MB", "info")
-                    
+                    if file_size < 1024:
+                        self.log_message(f"File size: {file_size} bytes", "info")
+                    elif file_size < 1024*1024:
+                        self.log_message(f"File size: {file_size/1024:.2f} KB", "info")
+                    else:
+                        self.log_message(f"File size: {file_size/(1024*1024):.2f} MB", "info")
+                
                     self.root.after(0, lambda: self.step_progress.config(value=0, maximum=100))
                     
                     class ProgressTracker:
