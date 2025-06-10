@@ -1347,7 +1347,7 @@ class ForensicGUI:
 
             # Calculate forensic instance root volume size
             # Ensure it's at least 30GB, or evidence_volume_size + 10GB, whichever is larger.
-            forensic_root_vol_size = int(evidence_volume_size_gb) + 10
+            forensic_root_vol_size = int(evidence_volume_size_gb) + 15
             self.log_message(f"Target evidence volume size: {evidence_volume_size_gb}GB. Forensic instance root volume will be {forensic_root_vol_size}GB.", "info")
 
 
