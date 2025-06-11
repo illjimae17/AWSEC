@@ -355,7 +355,9 @@ class ForensicGUI:
                     c.drawString(80, y_position, f"SHA256 (Raw Image on Forensic): {entry['raw_hash']}")
                     y_position -= 15
                     c.drawString(80, y_position, f"SHA256 (Encrypted Image on Forensic): {entry['encrypted_hash']}")
-                    y_position -= 25
+                    y_position -= 15
+                    c.drawString(80, y_position, f"SHA256 (Encrypted Image on Local): {entry.get('encrypted_local_hash', 'N/A')}")
+                    y_position -= 15
             
             c.save()
             self.log_message(f"Report generated at {report_path}", 'success')
@@ -2003,7 +2005,8 @@ class ForensicGUI:
                 "hash_match": hash_match_status, 
                 "encrypted": "Yes",
                 "raw_hash": hashes.get("raw_on_forensic", "N/A"),
-                "encrypted_hash": hashes.get("encrypted_on_forensic", "N/A")
+                "encrypted_hash": hashes.get("encrypted_on_forensic", "N/A"),
+                "encrypted_local_hash": hashes.get("downloaded_encrypted_local", "N/A")  
             })
             self.report_data.append((case_id, volume_id, timestamp_long))
             self.root.after(0, self.update_results_tables)
