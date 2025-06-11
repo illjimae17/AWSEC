@@ -1023,8 +1023,7 @@ class ForensicGUI:
             if self.cancellation_requested: raise InterruptedError("Process cancelled by user.")
             self.log_message(f"Downloading evidence files for {vol_id_to_process} from forensic instance...", 'info')
             files_to_download = {
-                encrypted_image_path: f"{vol_id_to_process}.img.gpg",
-                raw_hash_output_path: f"{vol_id_to_process}.sha256",
+                encrypted_image_path: f"{vol_id_to_process}.img.gpg"
             }
             downloaded_file_paths = self.download_evidences_sftp(files_to_download, vol_id_to_process)
             if not downloaded_file_paths.get(encrypted_image_path): 
