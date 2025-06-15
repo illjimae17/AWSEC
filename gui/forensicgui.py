@@ -937,10 +937,8 @@ class ForensicGUI:
                 instance_name=forensic_instance_name, 
                 template_instance_data=original_instance_data,
                 availability_zone=template_az,
-                evidence_volume_size_gb=evidence_volume_size # Pass evidence volume size
+                evidence_volume_size_gb=evidence_volume_size
             )
-            if not self.forensic_instance:
-                raise Exception("Failed to create forensic instance.")
             self.log_message(f"Forensic instance {self.forensic_instance['InstanceId']} created.", 'success')
             self.root.after(0, lambda: self.overall_progress.config(value=15))
 
@@ -950,8 +948,7 @@ class ForensicGUI:
             
             if is_root_volume:
                 self.log_message(f"Volume {vol_id_to_process} is a root volume. Stopping original instance {original_instance_data['InstanceId']}...", 'warning')
-                if not self.stop_instance(original_instance_data['InstanceId']):
-                    raise Exception(f"Failed to stop original instance {original_instance_data['InstanceId']}.")
+                self.stop_instance(original_instance_data['InstanceId'])
                 self.current_volume_original_state['was_stopped_by_tool'] = True
                 self.log_message(f"Original instance {original_instance_data['InstanceId']} stopped.", 'success')
             self.root.after(0, lambda: self.step_progress.config(value=10)) 
@@ -963,8 +960,6 @@ class ForensicGUI:
                 original_instance_data, 
                 self.forensic_instance
             )
-            if not attached_device_on_forensic_ignored: 
-                raise Exception(f"Failed to move volume {vol_id_to_process} to forensic instance.")
             
             self.log_message(f"Volume {vol_id_to_process} successfully attached to forensic instance. Reported device (ignored for dc3dd): {attached_device_on_forensic_ignored}.", 'success')
             self.root.after(0, lambda: self.overall_progress.config(value=30)) 
@@ -979,7 +974,8 @@ class ForensicGUI:
                 key_filename=self.key_path_entry.get()
             )
             if not self.ssh_client:
-                raise Exception("Failed to connect to forensic instance via SSH.")
+                raise InterruptedError("SSH connection was cancelled by user.")
+
             self.log_message("SSH connection to forensic instance established.", 'success')
             self.root.after(0, lambda: self.overall_progress.config(value=35)) 
 
@@ -990,7 +986,6 @@ class ForensicGUI:
             self.root.after(0, lambda: self.step_progress.config(value=70)) 
 
             working_dir = self.create_working_directory() 
-            if not working_dir: raise Exception("Failed to create working directory on forensic instance.")
             self.log_message(f"Working directory {working_dir} created on forensic instance.", "info")
             self.root.after(0, lambda: self.overall_progress.config(value=40)) 
 
@@ -1002,12 +997,9 @@ class ForensicGUI:
                 working_dir=working_dir,
                 passphrase=self.passphrase_entry.get()
             )
-            if not pipeline_results:
-                raise Exception("Imaging and encryption pipeline failed.")
 
             raw_image_hash_on_forensic = pipeline_results["raw_hash"]
             encrypted_image_path = pipeline_results["encrypted_image_path"]
-            raw_hash_output_path = pipeline_results["raw_hash_output_path"]
             
             self.log_message(f"Imaging and encryption pipeline completed.", 'success')
             self.log_message(f"SHA256 (Raw Stream): {raw_image_hash_on_forensic}", 'success')
@@ -1017,9 +1009,6 @@ class ForensicGUI:
             if self.cancellation_requested: raise InterruptedError("Process cancelled by user.")
             self.log_message("Calculating hash of encrypted image on forensic instance...", 'info')
             encrypted_image_hash_on_forensic = self.calculate_sha256_remote(encrypted_image_path)
-            if not encrypted_image_hash_on_forensic:
-                 self.log_message(f"Could not calculate encrypted image hash for {encrypted_image_path}.", "warning")
-                 encrypted_image_hash_on_forensic = "N/A_Calculation_Failed"
             self.log_message(f"SHA256 (Encrypted on Forensic): {encrypted_image_hash_on_forensic}", 'info')
             self.root.after(0, lambda: self.step_progress.config(value=90)) 
 
@@ -1073,8 +1062,6 @@ class ForensicGUI:
                 },
                 downloaded_files_map=downloaded_file_paths,
             )
-            if not coc_details:
-                raise Exception("Failed to generate Chain of Custody documentation.")
             self.log_message(f"Chain of Custody generated for Case ID: {coc_details['case_id']}", 'success')
             self.root.after(0, lambda: self.overall_progress.config(value=95))
             self.root.after(0, lambda: self.step_progress.config(value=100)) 
@@ -1083,7 +1070,6 @@ class ForensicGUI:
 
         except InterruptedError: 
             self.log_message("\nGathering process explicitly cancelled by user.", 'warning')
-        # FIX: Catch specific network/AWS errors
         except (BotoCoreError, ClientError, paramiko.SSHException, OSError) as e:
             if not self.cancellation_requested:
                 self.log_message(f"\nCRITICAL ERROR: A network or AWS API error occurred: {e}", 'error')
@@ -1117,6 +1103,7 @@ class ForensicGUI:
         THIS FUNCTION SHOULD ONLY BE CALLED AS A TARGET OF A THREAD.
         It performs cleanup after the forensic process, including resource restoration.
         """
+        cleanup_network_error = None
         try:
             self.log_message("Initiating cleanup and resource restoration...", 'info')
             
@@ -1129,19 +1116,20 @@ class ForensicGUI:
                 was_stopped_by_tool = state['was_stopped_by_tool']
                 
                 self.log_message(f"Restoring volume {vol_id_to_restore} to instance {original_inst_data['InstanceId']}...", 'info')
-
-                if self.reattach_volume_to_original(vol_id_to_restore, original_inst_data, self.forensic_instance, original_dev_name):
-                    self.log_message(f"Volume {vol_id_to_restore} successfully restored to original instance {original_inst_data['InstanceId']} as {original_dev_name}.", 'success')
+                
+                try:
+                    self.reattach_volume_to_original(vol_id_to_restore, original_inst_data, self.forensic_instance, original_dev_name)
+                    self.log_message(f"Volume {vol_id_to_restore} successfully restored to original instance.", 'success')
                     if was_stopped_by_tool:
-                        self.log_message(f"Original instance {original_inst_data['InstanceId']} was stopped by the tool. Attempting restart...", 'info')
-                        if self.start_instance(original_inst_data['InstanceId']):
-                            self.log_message(f"Original instance {original_inst_data['InstanceId']} restarted.", 'success')
-                        else:
-                            self.log_message(f"Failed to restart original instance {original_inst_data['InstanceId']}. Manual check may be needed.", 'error')
-                else:
-                    self.log_message(f"Failed to restore volume {vol_id_to_restore} to original instance. Manual intervention required.", 'error')
-            else:
-                self.log_message("No specific volume state to restore (process might have failed early or was not a volume operation).", "warning")
+                        self.log_message(f"Restarting original instance {original_inst_data['InstanceId']}...", 'info')
+                        self.start_instance(original_inst_data['InstanceId'])
+                        self.log_message(f"Original instance {original_inst_data['InstanceId']} restarted.", 'success')
+                except (BotoCoreError, ClientError, paramiko.SSHException, OSError) as e_restore:
+                    cleanup_network_error = e_restore
+                    self.log_message(f"Failed to restore resources due to a network error. Manual intervention required: {e_restore}", 'error')
+                except Exception as e_restore:
+                     self.log_message(f"Failed to restore resources. Manual intervention may be required: {e_restore}", 'error')
+
 
             # Close SSH connection
             if self.ssh_client:
@@ -1157,18 +1145,23 @@ class ForensicGUI:
             if self.forensic_instance and self.forensic_instance.get('InstanceId'):
                 instance_id_to_terminate = self.forensic_instance.get('InstanceId')
                 self.log_message(f"Terminating forensic instance {instance_id_to_terminate}...", 'warning')
-                
-                if self.terminate_instance(instance_id_to_terminate):
+                try:
+                    self.terminate_instance(instance_id_to_terminate)
                     self.log_message(f"Forensic instance {instance_id_to_terminate} terminated.", 'success')
-                else:
-                    self.log_message(f"Failed to terminate forensic instance {instance_id_to_terminate}. Please check AWS console.", 'error')
+                except (BotoCoreError, ClientError, paramiko.SSHException, OSError) as e_terminate:
+                    cleanup_network_error = e_terminate
+                    self.log_message(f"Failed to terminate forensic instance due to a network error: {e_terminate}", 'error')
+                except Exception as e_terminate:
+                    self.log_message(f"Failed to terminate forensic instance {instance_id_to_terminate}. Please check AWS console: {e_terminate}", 'error')
         
-        except (BotoCoreError, ClientError, paramiko.SSHException, OSError) as e:
-            self.log_message(f"\nCRITICAL ERROR during cleanup: A network or AWS API error occurred: {e}", 'error')
-            self.show_manual_intervention_warning(f"During cleanup process: {e}")
         except Exception as e:
-            self.log_message(f"An unexpected error occurred during cleanup: {e}", "error")
+            # This is a fallback for unexpected errors in the logic itself, not the cleanup actions
+            self.log_message(f"An unexpected error occurred during the cleanup logic: {e}", "error")
         finally:
+            # If a network error was caught during any cleanup step, show the warning.
+            if cleanup_network_error:
+                self.show_manual_intervention_warning(f"During cleanup process: {cleanup_network_error}")
+
             # --- GUI updates must be scheduled back to the main thread using root.after ---
             def schedule_gui_updates():
                 self.start_btn.config(state=tk.NORMAL)
@@ -1231,7 +1224,6 @@ class ForensicGUI:
 
             threading.Thread(target=perform_cancellation_shutdown, daemon=True).start()
 
-    # FIX: Add a new method to show the manual intervention warning in a thread-safe way
     def show_manual_intervention_warning(self, error_message):
         """
         Schedules a thread-safe popup to warn the user about manual cleanup.
@@ -1281,10 +1273,9 @@ class ForensicGUI:
             waiter = ec2.get_waiter('instance_stopped')
             waiter.wait(InstanceIds=[instance_id], WaiterConfig={'Delay': 15, 'MaxAttempts': 40}) 
             self.log_message(f"Instance {instance_id} stopped successfully.", 'success')
-            return True
         except Exception as e:
             self.log_message(f"Error stopping instance {instance_id}: {e}", 'error')
-            return False
+            raise
 
     def start_instance(self, instance_id):
         """Start an EC2 instance and wait for it to be running."""
@@ -1297,10 +1288,9 @@ class ForensicGUI:
             waiter = ec2.get_waiter('instance_running')
             waiter.wait(InstanceIds=[instance_id], WaiterConfig={'Delay': 15, 'MaxAttempts': 24}) 
             self.log_message(f"Instance {instance_id} started successfully.", 'success')
-            return True
         except Exception as e:
             self.log_message(f"Error starting instance {instance_id}: {e}", 'error')
-            return False
+            raise
 
     def terminate_instance(self, instance_id):
         """Terminate an EC2 instance."""
@@ -1313,10 +1303,9 @@ class ForensicGUI:
             waiter = ec2.get_waiter('instance_terminated')
             waiter.wait(InstanceIds=[instance_id], WaiterConfig={'Delay': 15, 'MaxAttempts': 40}) 
             self.log_message(f"Instance {instance_id} terminated successfully.", 'success')
-            return True
         except Exception as e:
             self.log_message(f"Error terminating instance {instance_id}: {e}", 'error')
-            return False
+            raise
             
     def create_new_instance(self, instance_name, template_instance_data, availability_zone=None, evidence_volume_size_gb=8):
         """
@@ -1409,7 +1398,7 @@ class ForensicGUI:
             self.log_message(f"Error creating new forensic instance '{instance_name}': {e}", 'error')
             import traceback
             self.log_message(traceback.format_exc(), "error")
-            return None
+            raise
             
     def move_volume_to_forensic(self, volume_id, original_instance_data, forensic_instance_data):
         """Detaches a volume from original instance and attaches it to the forensic instance."""
@@ -1444,7 +1433,7 @@ class ForensicGUI:
                     self.log_message(f"Volume {volume_id} reattached to original instance.", 'info')
             except Exception as reattach_err:
                 self.log_message(f"Failed to automatically reattach {volume_id} to original instance: {reattach_err}. Manual check needed.", 'error')
-            return None
+            raise
 
     def reattach_volume_to_original(self, volume_id, original_instance_data, forensic_instance_data_nullable, original_device_name):
         """Detaches volume from forensic (if attached) and reattaches to original."""
@@ -1454,32 +1443,25 @@ class ForensicGUI:
         try:
             vol_description = ec2.describe_volumes(VolumeIds=[volume_id])['Volumes'][0]
             current_attachments = vol_description.get('Attachments', [])
-            is_attached_to_forensic = False
 
             if forensic_instance_data_nullable and forensic_instance_data_nullable.get('InstanceId'):
                 forensic_id = forensic_instance_data_nullable['InstanceId']
                 for att in current_attachments:
                     if att.get('InstanceId') == forensic_id:
-                        is_attached_to_forensic = True
                         self.log_message(f"Volume {volume_id} is attached to forensic instance {forensic_id}. Detaching...", 'info')
                         ec2.detach_volume(VolumeId=volume_id, InstanceId=forensic_id, Force=False) 
                         waiter_available = ec2.get_waiter('volume_available')
                         waiter_available.wait(VolumeIds=[volume_id], WaiterConfig={'Delay': 10, 'MaxAttempts': 18})
                         self.log_message(f"Volume {volume_id} detached from forensic instance.", 'success')
-                        break # Important: exit loop once detached
+                        break
             
-            # Re-fetch volume description to get the latest state after potential detach
             vol_description_after_detach = ec2.describe_volumes(VolumeIds=[volume_id])['Volumes'][0]
 
             if vol_description_after_detach['State'] != 'available':
-                self.log_message(f"Volume {volume_id} not 'available' (state: {vol_description_after_detach['State']}) before attaching to original. Waiting...", 'warning')
+                self.log_message(f"Waiting for volume {volume_id} to be 'available'...", 'warning')
                 waiter_available_retry = ec2.get_waiter('volume_available')
-                try:
-                    waiter_available_retry.wait(VolumeIds=[volume_id], WaiterConfig={'Delay':10, 'MaxAttempts':12}) # Wait up to 2 mins
-                    self.log_message(f"Volume {volume_id} is now available.", 'info')
-                except Exception as e_wait_final:
-                     self.log_message(f"Volume {volume_id} did not become available for reattachment: {e_wait_final}. Reattachment might fail.", 'error')
-                     # Optionally, could raise an error here or attempt attachment anyway
+                waiter_available_retry.wait(VolumeIds=[volume_id], WaiterConfig={'Delay':10, 'MaxAttempts':12})
+                self.log_message(f"Volume {volume_id} is now available.", 'info')
 
             self.log_message(f"Reattaching volume {volume_id} to original instance {original_instance_id} as {original_device_name}...", 'info')
             ec2.attach_volume(VolumeId=volume_id, InstanceId=original_instance_id, Device=original_device_name)
@@ -1487,10 +1469,9 @@ class ForensicGUI:
             waiter_in_use = ec2.get_waiter('volume_in_use')
             waiter_in_use.wait(VolumeIds=[volume_id], Filters=[{'Name':'attachment.instance-id', 'Values':[original_instance_id]}], WaiterConfig={'Delay': 10, 'MaxAttempts': 12})
             self.log_message(f"Volume {volume_id} reattached to {original_instance_id} as {original_device_name}.", 'success')
-            return True
         except Exception as e:
             self.log_message(f"Error reattaching volume {volume_id} to original instance {original_instance_id}: {e}", 'error')
-            return False
+            raise
 
     def connect_with_retry(self, hostname, username, key_filename, max_retries=10, retry_interval=20):
         """Connects to an EC2 instance via SSH with retry logic and keepalive."""
@@ -1500,13 +1481,13 @@ class ForensicGUI:
         try:
             key = paramiko.RSAKey.from_private_key_file(key_filename)
         except paramiko.PasswordRequiredException:
-            self.log_message(f"SSH key file {key_filename} is encrypted and requires a passphrase. This tool does not support passphrase-protected keys.", "error")
+            self.log_message(f"SSH key file {key_filename} is encrypted. This tool does not support passphrase-protected keys.", "error")
             return None
         except Exception as e_key:
             self.log_message(f"Error loading SSH key {key_filename}: {e_key}", "error")
             return None
 
-
+        last_exception = None
         for attempt in range(max_retries):
             if self.cancellation_requested:
                 self.log_message("SSH connection cancelled by user.", "warning")
@@ -1519,20 +1500,23 @@ class ForensicGUI:
                 if transport and transport.is_active():
                     transport.set_keepalive(60) 
                     self.log_message("SSH connection established successfully. Keepalive set to 60s.", 'success')
-                else: # Should not happen if connect succeeded
-                    self.log_message("SSH connection established, but could not get active transport to set keepalive.", 'warning')
+                else:
+                    self.log_message("SSH connection established, but could not set keepalive.", 'warning')
                 return ssh
             except paramiko.AuthenticationException as auth_e:
-                self.log_message(f"SSH Authentication failed: {auth_e}. Check key, username, and instance SSH configuration.", 'error')
-                break 
+                self.log_message(f"SSH Authentication failed: {auth_e}. Check key and instance configuration.", 'error')
+                raise 
             except (paramiko.SSHException, TimeoutError, ConnectionRefusedError, OSError) as e: 
                 self.log_message(f"SSH connection failed (Attempt {attempt+1}): {e}", 'warning')
+                last_exception = e
                 if attempt < max_retries - 1:
                     self.log_message(f"Retrying in {retry_interval} seconds...", 'info')
                     time.sleep(retry_interval)
                 else:
                     self.log_message("Failed to establish SSH connection after multiple attempts.", 'error')
-                    break 
+        
+        if last_exception:
+            raise last_exception
         return None
             
     def install_dc3dd_and_gpg(self):
@@ -1544,175 +1528,146 @@ class ForensicGUI:
         for current_command in commands_to_run: 
             if self.cancellation_requested: return
             self.log_message(f"Executing on forensic instance: {current_command}", 'info', timestamp=False)
-            stdin, stdout, stderr = self.ssh_client.exec_command(current_command, timeout=300) 
-            exit_status = stdout.channel.recv_exit_status() 
+            try:
+                stdin, stdout, stderr = self.ssh_client.exec_command(current_command, timeout=300) 
+                exit_status = stdout.channel.recv_exit_status() 
 
-            out = stdout.read().decode(errors='ignore') 
-            err = stderr.read().decode(errors='ignore') 
-            if out.strip(): self.log_message(f"Output:\n{out.strip()}", 'info', timestamp=False)
-            if err.strip(): self.log_message(f"Error/Warning Output:\n{err.strip()}", 'warning' if exit_status == 0 else 'error', timestamp=False)
-            
-            if exit_status != 0:
-                raise Exception(f"Command '{current_command}' failed with exit status {exit_status}")
-        self.log_message("Evidence Gathering tools (dc3dd, gpg) installation completed.", 'success')
+                out = stdout.read().decode(errors='ignore') 
+                err = stderr.read().decode(errors='ignore') 
+                if out.strip(): self.log_message(f"Output:\n{out.strip()}", 'info', timestamp=False)
+                if err.strip(): self.log_message(f"Error/Warning Output:\n{err.strip()}", 'warning' if exit_status == 0 else 'error', timestamp=False)
+                
+                if exit_status != 0:
+                    if exit_status == -1 or (not self.ssh_client.get_transport().is_active()):
+                        raise paramiko.SSHException(f"Command '{current_command}' failed, indicating a likely network interruption.")
+                    raise Exception(f"Command '{current_command}' failed with exit status {exit_status}")
+            except (paramiko.SSHException, TimeoutError, OSError) as e:
+                self.log_message(f"A network error occurred while running '{current_command}': {e}", "error")
+                raise
 
     def create_working_directory(self):
         """Create working directory on remote instance"""
         working_dir = '/tmp/forensic_work' 
         command_mkdir = f'mkdir -p {working_dir} && chmod 700 {working_dir}' 
-        stdin, stdout, stderr = self.ssh_client.exec_command(command_mkdir)
-        exit_status = stdout.channel.recv_exit_status()
-        err = stderr.read().decode(errors='ignore').strip() 
-        if exit_status != 0:
-            self.log_message(f"Error creating working directory {working_dir}: {err}", 'error')
-            return None
-        self.log_message(f"Working directory {working_dir} created/ensured on forensic instance.", 'info')
-        return working_dir
+        try:
+            stdin, stdout, stderr = self.ssh_client.exec_command(command_mkdir)
+            exit_status = stdout.channel.recv_exit_status()
+            err = stderr.read().decode(errors='ignore').strip() 
+            if exit_status != 0:
+                if exit_status == -1 or (not self.ssh_client.get_transport().is_active()):
+                    raise paramiko.SSHException("Failed to create working directory, indicating a likely network interruption.")
+                raise Exception(f"Error creating working directory {working_dir}: {err}")
+            self.log_message(f"Working directory {working_dir} created/ensured on forensic instance.", 'info')
+            return working_dir
+        except (paramiko.SSHException, TimeoutError, OSError) as e:
+            self.log_message(f"Network or SSH error creating working directory: {e}", 'error')
+            raise
 
     def run_imaging_and_encryption_pipeline(self, volume_id_to_image, working_dir, passphrase):
         """
         Runs a piped command to image, hash, and encrypt in one go.
         sudo dc3dd | tee >(sha256sum > hash.txt) | gpg > image.gpg
         """
-        # 1. Discover device path
-        actual_device_path_for_dc3dd = None
-        lsblk_command = 'lsblk -o name,size -lnd'
-        max_lsblk_retries = 3
-        lsblk_retry_delay_seconds = 10
+        try:
+            # 1. Discover device path
+            actual_device_path_for_dc3dd = None
+            lsblk_command = 'lsblk -o name,size -lnd'
+            max_lsblk_retries = 3
+            lsblk_retry_delay_seconds = 10
 
-        self.log_message(f"Attempting to identify device for imaging volume '{volume_id_to_image}' using '{lsblk_command}' with retries...", 'info')
-        for attempt in range(max_lsblk_retries):
-            if self.cancellation_requested: raise InterruptedError("Device discovery cancelled by user.")
-            
-            self.log_message(f"lsblk attempt {attempt + 1}/{max_lsblk_retries}...", 'info')
-            stdin, stdout, stderr_lsblk = self.ssh_client.exec_command(lsblk_command, timeout=30)
-            exit_status_lsblk = stdout.channel.recv_exit_status()
-            lsblk_output_raw = stdout.read().decode(errors='ignore').strip()
-
-            if exit_status_lsblk == 0 and lsblk_output_raw and len(lsblk_output_raw.splitlines()) >= 2:
-                device_line_to_parse = lsblk_output_raw.splitlines()[-1]
-                device_name_short = device_line_to_parse.split(" ")[0].strip()
-                if device_name_short:
-                    actual_device_path_for_dc3dd = f"/dev/{device_name_short}"
-                    break
-            
-            if not actual_device_path_for_dc3dd and attempt < max_lsblk_retries - 1:
-                self.log_message(f"Device not identified. Retrying lsblk in {lsblk_retry_delay_seconds} seconds...", 'info')
-                time.sleep(lsblk_retry_delay_seconds)
-
-        if not actual_device_path_for_dc3dd:
-            raise Exception("Device path for imaging could not be determined after multiple retries.")
-        
-        # 2. Define file paths and construct the pipeline command
-        encrypted_image_path = f"{working_dir}/{volume_id_to_image}.img.gpg"
-        raw_hash_output_path = f"{working_dir}/{volume_id_to_image}.sha256"
-
-        dc3dd_part = f"sudo dc3dd if={actual_device_path_for_dc3dd} verb=on"
-        tee_part = f"tee >(sha256sum > {raw_hash_output_path})"
-        gpg_part = (f"gpg --batch --yes --pinentry-mode loopback --passphrase '{passphrase}' "
-                    f"--symmetric --cipher-algo AES256 -o {encrypted_image_path}")
-
-        # Use bash -c 'set -o pipefail; ...' to ensure failure in any part of the pipe fails the whole command
-        pipeline_command_str = f"bash -c 'set -o pipefail; {dc3dd_part} | {tee_part} | {gpg_part}'"
-
-        self.log_message(f"Executing pipeline: {pipeline_command_str.replace(passphrase, '********')}", 'info', timestamp=False)
-
-        # 3. Execute and monitor the command
-        stdin, stdout, stderr = self.ssh_client.exec_command(pipeline_command_str, timeout=21600) # 6 hour timeout
-        channel = stdout.channel
-        channel.setblocking(0)
-
-        last_progress_line = None
-        last_progress_display_time = 0
-        progress_log_interval = 3.0
-
-        self.log_message("--- Imaging & Encryption process started, monitoring stderr ---", "info", timestamp=True)
-
-        while not channel.exit_status_ready():
-            if self.cancellation_requested:
-                raise InterruptedError("Process cancelled by user request.")
-
-            try:
-                if channel.recv_stderr_ready():
-                    chunk = channel.recv_stderr(4096).decode(errors='ignore')
-                    for sub_line_raw in chunk.replace('\r', '\n').splitlines():
-                        sub_line = sub_line_raw.strip()
-                        if not sub_line: continue
-
-                        is_progress_line = ("%" in sub_line and "copied" in sub_line)
-                        if is_progress_line:
-                            last_progress_line = sub_line
-                            try:
-                                percent_str = sub_line.split('%')[0].split('(')[-1].strip()
-                                self.root.after(0, lambda p=int(percent_str): self.step_progress.config(value=p))
-                            except (ValueError, IndexError): pass
-                        else:
-                            if last_progress_line:
-                                self.log_message(last_progress_line, 'info', timestamp=False)
-                                last_progress_line = None
-                            self.log_message(sub_line, 'info', timestamp=False)
+            self.log_message(f"Attempting to identify device for imaging volume '{volume_id_to_image}'...", 'info')
+            for attempt in range(max_lsblk_retries):
+                if self.cancellation_requested: raise InterruptedError("Device discovery cancelled by user.")
                 
-                if last_progress_line and (time.time() - last_progress_display_time > progress_log_interval):
-                    self.log_message(last_progress_line, 'info', timestamp=False)
-                    last_progress_display_time = time.time()
-                    last_progress_line = None
-                
-                if not channel.recv_stderr_ready(): time.sleep(0.1)
+                self.log_message(f"lsblk attempt {attempt + 1}/{max_lsblk_retries}...", 'info')
+                stdin, stdout, stderr_lsblk = self.ssh_client.exec_command(lsblk_command, timeout=30)
+                exit_status_lsblk = stdout.channel.recv_exit_status()
+                lsblk_output_raw = stdout.read().decode(errors='ignore').strip()
 
-            except BlockingIOError: time.sleep(0.1)
-            except Exception as e_stderr_read:
-                self.log_message(f"Exception while reading pipeline streams: {e_stderr_read}", "error")
+                if exit_status_lsblk == 0 and lsblk_output_raw and len(lsblk_output_raw.splitlines()) >= 2:
+                    device_line_to_parse = lsblk_output_raw.splitlines()[-1]
+                    device_name_short = device_line_to_parse.split(" ")[0].strip()
+                    if device_name_short:
+                        actual_device_path_for_dc3dd = f"/dev/{device_name_short}"
+                        break
+                elif exit_status_lsblk == -1:
+                    raise paramiko.SSHException("Network error during lsblk execution.")
+                
+                if not actual_device_path_for_dc3dd and attempt < max_lsblk_retries - 1:
+                    self.log_message(f"Device not identified. Retrying lsblk in {lsblk_retry_delay_seconds} seconds...", 'info')
+                    time.sleep(lsblk_retry_delay_seconds)
+
+            if not actual_device_path_for_dc3dd:
+                raise Exception("Device path for imaging could not be determined after multiple retries.")
+            
+            # 2. Define file paths and construct the pipeline command
+            encrypted_image_path = f"{working_dir}/{volume_id_to_image}.img.gpg"
+            raw_hash_output_path = f"{working_dir}/{volume_id_to_image}.sha256"
+
+            dc3dd_part = f"sudo dc3dd if={actual_device_path_for_dc3dd} verb=on"
+            tee_part = f"tee >(sha256sum > {raw_hash_output_path})"
+            gpg_part = (f"gpg --batch --yes --pinentry-mode loopback --passphrase '{passphrase}' "
+                        f"--symmetric --cipher-algo AES256 -o {encrypted_image_path}")
+
+            pipeline_command_str = f"bash -c 'set -o pipefail; {dc3dd_part} | {tee_part} | {gpg_part}'"
+
+            self.log_message(f"Executing pipeline: {pipeline_command_str.replace(passphrase, '********')}", 'info', timestamp=False)
+
+            # 3. Execute and monitor the command
+            stdin, stdout, stderr = self.ssh_client.exec_command(pipeline_command_str, timeout=21600) # 6 hour timeout
+            channel = stdout.channel
+            
+            # Monitor stderr for progress while command runs
+            while not channel.exit_status_ready():
+                if self.cancellation_requested: raise InterruptedError("Process cancelled by user.")
                 time.sleep(0.5)
-        
-        if last_progress_line: self.log_message(last_progress_line, 'info', timestamp=False)
+                if channel.recv_stderr_ready():
+                    self.log_message(channel.recv_stderr(1024).decode(errors='ignore').strip(), 'info', timestamp=False)
+            
+            exit_status = channel.recv_exit_status()
+            
+            if exit_status != 0:
+                if exit_status == -1:
+                    raise paramiko.SSHException("Imaging pipeline failed, indicating a likely network interruption.")
+                raise Exception(f"Imaging/Encryption process failed with exit status {exit_status}.")
 
-        exit_status = channel.recv_exit_status()
-        self.log_message(f"--- Process completed exit_status: {exit_status} ---", "info", timestamp=True)
-        
-        if exit_status != 0:
-            error_output = stderr.read().decode(errors='ignore').strip()
-            self.log_message(f"Imaging/Encryption process failed. Stderr: {error_output}", 'error')
-            raise Exception(f"Imaging/Encryption process failed with exit status {exit_status}.")
+            # 4. Retrieve the calculated hash
+            raw_hash = self.get_remote_file_content(raw_hash_output_path)
+            if raw_hash and len(raw_hash.split()) > 0:
+                raw_hash_on_forensic = raw_hash.split()[0]
+            else:
+                raw_hash_on_forensic = "N/A_Hash_File_Read_Error"
 
-        # 4. Retrieve the calculated hash
-        raw_hash = self.get_remote_file_content(raw_hash_output_path)
-        if raw_hash and len(raw_hash.split()) > 0:
-            raw_hash_on_forensic = raw_hash.split()[0]
-        else:
-            self.log_message("Failed to retrieve raw stream hash from remote file.", "error")
-            raw_hash_on_forensic = "N/A_Hash_File_Read_Error"
-
-        return {
-            "raw_hash": raw_hash_on_forensic,
-            "encrypted_image_path": encrypted_image_path,
-            "raw_hash_output_path": raw_hash_output_path
-        }
-
+            return {
+                "raw_hash": raw_hash_on_forensic,
+                "encrypted_image_path": encrypted_image_path
+            }
+        except (paramiko.SSHException, TimeoutError, OSError) as e:
+            self.log_message(f"A network error occurred during the imaging pipeline: {e}", "error")
+            raise
 
     def calculate_sha256_remote(self, remote_file_path):
         """Calculate SHA256 hash of a file on the remote instance."""
-        if self.cancellation_requested:
-            self.log_message(f"Remote SHA256 calculation for {remote_file_path} cancelled before start.", "warning")
-            raise InterruptedError("Remote SHA256 calculation cancelled.")
+        try:
+            if self.cancellation_requested: raise InterruptedError("Remote hash calculation cancelled.")
 
-        self.log_message(f"Calculating SHA256 for remote file: {remote_file_path}", "info")
-        command = f"sha256sum {remote_file_path}"
-        stdin, stdout, stderr = self.ssh_client.exec_command(command, timeout=7200) # Increased timeout for potentially large files
-        exit_status = stdout.channel.recv_exit_status()
-        output = stdout.read().decode(errors='ignore').strip()
-        error = stderr.read().decode(errors='ignore').strip()
+            self.log_message(f"Calculating SHA256 for remote file: {remote_file_path}", "info")
+            command = f"sha256sum {remote_file_path}"
+            stdin, stdout, stderr = self.ssh_client.exec_command(command, timeout=7200)
+            exit_status = stdout.channel.recv_exit_status()
+            output = stdout.read().decode(errors='ignore').strip()
+            error = stderr.read().decode(errors='ignore').strip()
 
-        if exit_status == 0 and output:
-            hash_val = output.split()[0]
-            if len(hash_val) == 64:
-                self.log_message(f"SHA256 for {remote_file_path}: {hash_val}", "success")
-                return hash_val
+            if exit_status == 0 and output:
+                return output.split()[0]
+            elif exit_status == -1:
+                raise paramiko.SSHException(f"Remote hash calculation failed for {remote_file_path}, indicating a likely network interruption.")
             else:
-                self.log_message(f"sha256sum for {remote_file_path} produced invalid hash format: {output}", 'error')
-                return f"N/A_Invalid_Hash_Format_For_{os.path.basename(remote_file_path)}"
-        else:
-            self.log_message(f"Error calculating SHA256 for {remote_file_path} on remote. Exit: {exit_status}, Stderr: {error}, Stdout: {output}", 'error')
-            return f"N/A_Calculation_Error_For_{os.path.basename(remote_file_path)}"
+                self.log_message(f"Error calculating SHA256 for {remote_file_path} on remote. Exit: {exit_status}, Stderr: {error}", 'error')
+                return "N/A_Calculation_Error"
+        except (paramiko.SSHException, TimeoutError, OSError) as e:
+            self.log_message(f"A network error occurred during remote hash calculation: {e}", "error")
+            raise
 
     def calculate_sha256_local(self, local_file_path, progress_widget=None):
         """Calculate SHA256 hash of a local file, with optional progress updates."""
@@ -2051,4 +2006,3 @@ class ForensicGUI:
             import traceback
             self.log_message(traceback.format_exc(), "error")
             return None
-
