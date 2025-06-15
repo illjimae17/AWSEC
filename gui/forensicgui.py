@@ -69,6 +69,9 @@ class ForensicGUI:
         self.integrity_data = []
         self.report_data = []
         self.current_volume_original_state = None # Stores info for restoration on cancellation
+        
+        # FIX: Add a flag to prevent multiple cleanup processes from running simultaneously.
+        self.cleanup_in_progress = False
 
         self.loading_screen = ttk.Frame(self.main_frame) # General loading screen
         self.loading_label = ttk.Label(self.loading_screen, text="", style='Header.TLabel')
@@ -761,7 +764,6 @@ class ForensicGUI:
                     self.root.attributes('-topmost', False)
                     self.show_login()  # Show login only after error dialog is closed
                 self.root.after(0, lambda: show_error_then_login(e))
-                self.root.after(0, show_error_then_login)
             finally:
                 self.root.after(0, self.hide_loading_screen)
                 self.root.lift()
@@ -1085,13 +1087,34 @@ class ForensicGUI:
                 import traceback
                 self.log_message(traceback.format_exc(), 'error') 
         finally:
-            self.root.after(0, self.cleanup_forensic_process)
+            # FIX: Call the non-blocking function to start cleanup in a background thread
+            self.root.after(0, self.start_cleanup_process)
 
+    # ===================== FIX: CLEANUP PROCESS REFACTORED FOR RESPONSIVENESS =====================
+    def start_cleanup_process(self):
+        """
+        Starts the cleanup process in a separate thread to keep the GUI responsive.
+        This is the non-blocking function that should be called by other parts of the code.
+        """
+        # FIX: Check if cleanup is already running to prevent race conditions.
+        if self.cleanup_in_progress:
+            self.log_message("Cleanup is already in progress. Ignoring request.", "warning")
+            return
+
+        self.cleanup_in_progress = True
+        self.log_message("Cleanup process started in background...", 'info')
+        cleanup_thread = threading.Thread(target=self._run_cleanup_logic, daemon=True)
+        cleanup_thread.start()
             
-    def cleanup_forensic_process(self):
-        """Cleanup after forensic process, including resource restoration on success or cancellation."""
+    def _run_cleanup_logic(self):
+        """
+        Contains the actual blocking cleanup logic. 
+        THIS FUNCTION SHOULD ONLY BE CALLED AS A TARGET OF A THREAD.
+        It performs cleanup after the forensic process, including resource restoration.
+        """
         self.log_message("Initiating cleanup and resource restoration...", 'info')
         
+        # Restore volume to original instance if applicable
         if self.current_volume_original_state:
             state = self.current_volume_original_state
             vol_id_to_restore = state['volume_id']
@@ -1114,6 +1137,7 @@ class ForensicGUI:
         else:
             self.log_message("No specific volume state to restore (process might have failed early or was not a volume operation).", "warning")
 
+        # Close SSH connection
         if self.ssh_client:
             try:
                 self.log_message("Closing SSH connection to forensic instance...", 'info')
@@ -1123,39 +1147,51 @@ class ForensicGUI:
             finally:
                 self.ssh_client = None
         
+        # Terminate forensic instance
         if self.forensic_instance and self.forensic_instance.get('InstanceId'):
-            self.log_message(f"Terminating forensic instance {self.forensic_instance['InstanceId']}...", 'warning')
-            if self.terminate_instance(self.forensic_instance['InstanceId']):
-                self.log_message(f"Forensic instance {self.forensic_instance['InstanceId']} terminated.", 'success')
+            # Store the ID in a local variable to prevent race conditions or state issues.
+            instance_id_to_terminate = self.forensic_instance.get('InstanceId')
+            self.log_message(f"Terminating forensic instance {instance_id_to_terminate}...", 'warning')
+            
+            if self.terminate_instance(instance_id_to_terminate):
+                self.log_message(f"Forensic instance {instance_id_to_terminate} terminated.", 'success')
             else:
-                self.log_message(f"Failed to terminate forensic instance {self.forensic_instance['InstanceId']}. Please check AWS console.", 'error')
+                self.log_message(f"Failed to terminate forensic instance {instance_id_to_terminate}. Please check AWS console.", 'error')
         
-        self.root.after(0, lambda: self.start_btn.config(state=tk.NORMAL))
-        self.root.after(0, lambda: self.cancel_btn.config(state=tk.DISABLED))
-        self.root.after(0, lambda: self.notebook.tab(0, state=tk.NORMAL))
-        self.root.after(0, lambda: self.overall_progress.config(value=0))
-        self.root.after(0, lambda: self.step_progress.config(value=0))
-        # Re-enable input fields and browse buttons after process
-        self.root.after(0, lambda: self.key_path_entry.config(state=tk.NORMAL))
-        self.root.after(0, lambda: self.passphrase_entry.config(state=tk.NORMAL))
-        self.root.after(0, lambda: self.output_dir_entry.config(state=tk.NORMAL))
-        def enable_browse_buttons():
+        # --- GUI updates must be scheduled back to the main thread using root.after ---
+        def schedule_gui_updates():
+            self.start_btn.config(state=tk.NORMAL)
+            self.cancel_btn.config(state=tk.DISABLED)
+            self.notebook.tab(0, state=tk.NORMAL)
+            self.overall_progress.config(value=0)
+            self.step_progress.config(value=0)
+            
+            # Re-enable input fields and browse buttons
+            self.key_path_entry.config(state=tk.NORMAL)
+            self.passphrase_entry.config(state=tk.NORMAL)
+            self.output_dir_entry.config(state=tk.NORMAL)
             for child in self.forensic_tab.winfo_children():
                 if isinstance(child, ttk.Frame):
                     for widget in child.winfo_children():
                         if isinstance(widget, ttk.Button) and widget['text'] == "Browse":
                             widget.config(state=tk.NORMAL)
-        self.root.after(0, enable_browse_buttons)
-        if self.cancellation_requested:
-            self.log_message("Cancellation cleanup complete. Resources have been restored/terminated as applicable.", 'warning')
-        else:
-            self.log_message("Post-process cleanup complete.", 'info')
             
-        self.cancellation_requested = False 
-        self.forensic_instance = None
-        self.current_volume_original_state = None
-        self.sftp_client = None  # Add this to track active SFTP client
+            if self.cancellation_requested:
+                self.log_message("Cancellation cleanup complete. Resources have been restored/terminated as applicable.", 'warning')
+            else:
+                self.log_message("Post-process cleanup complete.", 'info')
 
+            # Reset state variables
+            self.cancellation_requested = False 
+            self.forensic_instance = None
+            self.current_volume_original_state = None
+            self.sftp_client = None
+            
+            # FIX: Reset the cleanup flag so another process can run.
+            self.cleanup_in_progress = False
+        
+        self.root.after(0, schedule_gui_updates)
+        # ===================== END OF FIX =====================
 
     def cancel_process(self):
         """Attempt to cancel the forensic process with forceful termination of SFTP."""
@@ -1167,56 +1203,24 @@ class ForensicGUI:
             self.log_message("NOTE: CANCELLING PROCESS, THE TOOL MIGHT BE UNRESPONSIVE FOR A WHILE. DO NOT CLOSE THE TOOL!", "critical_warning")      
             
             self.cancellation_requested = True
-
             
-            # Disable cancel button immediately
             self.cancel_btn.config(state=tk.DISABLED)
             
-            # Show cancellation progress
-            self.overall_progress.config(value=0)
-            self.step_progress.config(value=0)
-            
-            def update_cancel_progress():
-                if self.cancellation_requested:
-                    current = self.step_progress['value']
-                    if current < 100:
-                        self.step_progress['value'] = current + 1
-                        self.update_status(self.forensic_status_label, f"Cancelling... {int(current)}%", "warning")
-                        self.root.after(50, update_cancel_progress)  # Update every 50ms
-                    
-            update_cancel_progress()
-
-            def perform_cancellation():
-                self.update_status(self.forensic_status_label, "Cleanup in progress...", "warning")
+            def perform_cancellation_shutdown():
+                """Forcefully close connections, then start the non-blocking cleanup."""
                 try:
-                    # Force close any active SFTP sessions
-                    if hasattr(self, 'ssh_client') and self.ssh_client:
-                        for attr in dir(self.ssh_client):
-                            if 'sftp' in attr.lower():
-                                try:
-                                    sftp_obj = getattr(self.ssh_client, attr)
-                                    if hasattr(sftp_obj, 'close'):
-                                        sftp_obj.close()
-                                except Exception:
-                                    pass
-                        
-                        # Force close SSH transport
-                        if self.ssh_client.get_transport():
+                    # Force close any active SFTP sessions or SSH transport
+                    if hasattr(self, 'ssh_client') and self.ssh_client and self.ssh_client.get_transport():
+                         if self.ssh_client.get_transport().is_active():
                             self.ssh_client.get_transport().close()
-                            self.ssh_client.close()
-                        self.log_message("Forcefully closed SSH and SFTP connections.", 'warning')
+                         self.log_message("Forcefully closed SSH transport.", 'warning')
                 except Exception as e:
-                    self.log_message(f"Error during forced SSH/SFTP shutdown: {e}", 'error')
+                    self.log_message(f"Error during forced SSH shutdown: {e}", 'error')
 
-                # Schedule cleanup
-                self.root.after(1, self.cleanup_forensic_process)
-                self.update_status(self.forensic_status_label,"Sucessfully cancelled forensic process.", "success")
-            # Run cancellation in a separate thread
-            threading.Thread(target=perform_cancellation, daemon=True).start()
-            
-            # Informational log based on start button state
-            if self.start_btn['state'] != tk.DISABLED:
-                self.log_message("Note: Start button was not disabled, suggesting the main process might have already concluded or failed. Cleanup will still be attempted if applicable.", "info")
+                # Schedule the non-blocking cleanup starter function
+                self.root.after(1, self.start_cleanup_process)
+
+            threading.Thread(target=perform_cancellation_shutdown, daemon=True).start()
 
 
     # ===================== AWS HELPER METHODS =====================
@@ -1871,7 +1875,7 @@ class ForensicGUI:
                                 elapsed = current_time - self.start_time
                                 speed = self.transferred / elapsed if elapsed > 0 else 0
                                 speed_mbps = (speed * 8) / (1024 * 1024) 
-                                self.log_func(f"\rDL {self.file_display_name}: {percent:.1f}% ({self.transferred/(1024*1024):.2f}/{self.total_bytes/(1024*1024):.2f} MB) @ {speed_mbps:.2f} Mbps\n", 'info', timestamp=False, newline=False)
+                                self.log_message(f"\rDL {self.file_display_name}: {percent:.1f}% ({self.transferred/(1024*1024):.2f}/{self.total_bytes/(1024*1024):.2f} MB) @ {speed_mbps:.2f} Mbps\n", 'info', timestamp=False, newline=False)
                                 self.last_logged_percent = int(percent)
                                 if self.transferred == self.total_bytes:
                                      self.log_func("", 'info', timestamp=False, newline=True) 
