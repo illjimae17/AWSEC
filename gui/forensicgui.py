@@ -18,6 +18,8 @@ from .logindialog import LoginDialog
 from .instancebutton import InstanceButton
 from .volumecheckbox import VolumeCheckbox
 import multiprocessing
+# FIX: Import botocore exceptions to catch specific AWS connection errors
+from botocore.exceptions import BotoCoreError, ClientError
 
 # ===================== GUI CLASSES =====================
 class ForensicGUI:
@@ -70,7 +72,6 @@ class ForensicGUI:
         self.report_data = []
         self.current_volume_original_state = None # Stores info for restoration on cancellation
         
-        # FIX: Add a flag to prevent multiple cleanup processes from running simultaneously.
         self.cleanup_in_progress = False
 
         self.loading_screen = ttk.Frame(self.main_frame) # General loading screen
@@ -873,6 +874,7 @@ class ForensicGUI:
                 return
         
         self.cancellation_requested = False # Reset flag
+        self.cleanup_in_progress = False # Reset cleanup flag for new process
         self.notebook.tab(0, state=tk.DISABLED) # Disable Instance Selection Tab
         self.start_btn.config(state=tk.DISABLED)
         self.cancel_btn.config(state=tk.NORMAL)
@@ -1046,7 +1048,7 @@ class ForensicGUI:
                 self.step_progress 
             ) if local_encrypted_image_path else None
             self.log_message(f"SHA256 (Local Downloaded Encrypted): {downloaded_encrypted_hash_local or 'N/A'}", 'info')
-            self.log_message(f"Start Verifying Hashes and Generating Chain of Custody... (The tool might be unresponsive), DO NOT CLOSE THE TOOL!", 'critical_warning')
+            self.log_message(f"Start Verifying Hashes and Generating Chain of Custody... DO NOT CLOSE THE TOOL!", 'critical_warning')
             self.root.after(0, lambda: self.step_progress.config(value=100)) 
 
             # --- YIELD TO GUI EVENT LOOP TO PREVENT FREEZE ---
@@ -1081,22 +1083,25 @@ class ForensicGUI:
 
         except InterruptedError: 
             self.log_message("\nGathering process explicitly cancelled by user.", 'warning')
+        # FIX: Catch specific network/AWS errors
+        except (BotoCoreError, ClientError, paramiko.SSHException, OSError) as e:
+            if not self.cancellation_requested:
+                self.log_message(f"\nCRITICAL ERROR: A network or AWS API error occurred: {e}", 'error')
+                self.show_manual_intervention_warning(str(e))
         except Exception as e:
             if not self.cancellation_requested: 
                 self.log_message(f"\nGathering process failed: {str(e)}", 'error')
                 import traceback
                 self.log_message(traceback.format_exc(), 'error') 
         finally:
-            # FIX: Call the non-blocking function to start cleanup in a background thread
-            self.root.after(0, self.start_cleanup_process)
+            if not self.cleanup_in_progress:
+                self.root.after(0, self.start_cleanup_process)
 
-    # ===================== FIX: CLEANUP PROCESS REFACTORED FOR RESPONSIVENESS =====================
     def start_cleanup_process(self):
         """
         Starts the cleanup process in a separate thread to keep the GUI responsive.
         This is the non-blocking function that should be called by other parts of the code.
         """
-        # FIX: Check if cleanup is already running to prevent race conditions.
         if self.cleanup_in_progress:
             self.log_message("Cleanup is already in progress. Ignoring request.", "warning")
             return
@@ -1112,95 +1117,99 @@ class ForensicGUI:
         THIS FUNCTION SHOULD ONLY BE CALLED AS A TARGET OF A THREAD.
         It performs cleanup after the forensic process, including resource restoration.
         """
-        self.log_message("Initiating cleanup and resource restoration...", 'info')
-        
-        # Restore volume to original instance if applicable
-        if self.current_volume_original_state:
-            state = self.current_volume_original_state
-            vol_id_to_restore = state['volume_id']
-            original_inst_data = state['original_instance_data']
-            original_dev_name = state['original_device_name']
-            was_stopped_by_tool = state['was_stopped_by_tool']
+        try:
+            self.log_message("Initiating cleanup and resource restoration...", 'info')
             
-            self.log_message(f"Restoring volume {vol_id_to_restore} to instance {original_inst_data['InstanceId']}...", 'info')
+            # Restore volume to original instance if applicable
+            if self.current_volume_original_state:
+                state = self.current_volume_original_state
+                vol_id_to_restore = state['volume_id']
+                original_inst_data = state['original_instance_data']
+                original_dev_name = state['original_device_name']
+                was_stopped_by_tool = state['was_stopped_by_tool']
+                
+                self.log_message(f"Restoring volume {vol_id_to_restore} to instance {original_inst_data['InstanceId']}...", 'info')
 
-            if self.reattach_volume_to_original(vol_id_to_restore, original_inst_data, self.forensic_instance, original_dev_name):
-                self.log_message(f"Volume {vol_id_to_restore} successfully restored to original instance {original_inst_data['InstanceId']} as {original_dev_name}.", 'success')
-                if was_stopped_by_tool:
-                    self.log_message(f"Original instance {original_inst_data['InstanceId']} was stopped by the tool. Attempting restart...", 'info')
-                    if self.start_instance(original_inst_data['InstanceId']):
-                        self.log_message(f"Original instance {original_inst_data['InstanceId']} restarted.", 'success')
-                    else:
-                        self.log_message(f"Failed to restart original instance {original_inst_data['InstanceId']}. Manual check may be needed.", 'error')
+                if self.reattach_volume_to_original(vol_id_to_restore, original_inst_data, self.forensic_instance, original_dev_name):
+                    self.log_message(f"Volume {vol_id_to_restore} successfully restored to original instance {original_inst_data['InstanceId']} as {original_dev_name}.", 'success')
+                    if was_stopped_by_tool:
+                        self.log_message(f"Original instance {original_inst_data['InstanceId']} was stopped by the tool. Attempting restart...", 'info')
+                        if self.start_instance(original_inst_data['InstanceId']):
+                            self.log_message(f"Original instance {original_inst_data['InstanceId']} restarted.", 'success')
+                        else:
+                            self.log_message(f"Failed to restart original instance {original_inst_data['InstanceId']}. Manual check may be needed.", 'error')
+                else:
+                    self.log_message(f"Failed to restore volume {vol_id_to_restore} to original instance. Manual intervention required.", 'error')
             else:
-                self.log_message(f"Failed to restore volume {vol_id_to_restore} to original instance. Manual intervention required.", 'error')
-        else:
-            self.log_message("No specific volume state to restore (process might have failed early or was not a volume operation).", "warning")
+                self.log_message("No specific volume state to restore (process might have failed early or was not a volume operation).", "warning")
 
-        # Close SSH connection
-        if self.ssh_client:
-            try:
-                self.log_message("Closing SSH connection to forensic instance...", 'info')
-                self.ssh_client.close()
-            except Exception as e_ssh:
-                self.log_message(f"Error closing SSH connection: {e_ssh}", 'warning')
-            finally:
-                self.ssh_client = None
+            # Close SSH connection
+            if self.ssh_client:
+                try:
+                    self.log_message("Closing SSH connection to forensic instance...", 'info')
+                    self.ssh_client.close()
+                except Exception as e_ssh:
+                    self.log_message(f"Error closing SSH connection: {e_ssh}", 'warning')
+                finally:
+                    self.ssh_client = None
+            
+            # Terminate forensic instance
+            if self.forensic_instance and self.forensic_instance.get('InstanceId'):
+                instance_id_to_terminate = self.forensic_instance.get('InstanceId')
+                self.log_message(f"Terminating forensic instance {instance_id_to_terminate}...", 'warning')
+                
+                if self.terminate_instance(instance_id_to_terminate):
+                    self.log_message(f"Forensic instance {instance_id_to_terminate} terminated.", 'success')
+                else:
+                    self.log_message(f"Failed to terminate forensic instance {instance_id_to_terminate}. Please check AWS console.", 'error')
         
-        # Terminate forensic instance
-        if self.forensic_instance and self.forensic_instance.get('InstanceId'):
-            # Store the ID in a local variable to prevent race conditions or state issues.
-            instance_id_to_terminate = self.forensic_instance.get('InstanceId')
-            self.log_message(f"Terminating forensic instance {instance_id_to_terminate}...", 'warning')
-            
-            if self.terminate_instance(instance_id_to_terminate):
-                self.log_message(f"Forensic instance {instance_id_to_terminate} terminated.", 'success')
-            else:
-                self.log_message(f"Failed to terminate forensic instance {instance_id_to_terminate}. Please check AWS console.", 'error')
-        
-        # --- GUI updates must be scheduled back to the main thread using root.after ---
-        def schedule_gui_updates():
-            self.start_btn.config(state=tk.NORMAL)
-            self.cancel_btn.config(state=tk.DISABLED)
-            self.notebook.tab(0, state=tk.NORMAL)
-            self.overall_progress.config(value=0)
-            self.step_progress.config(value=0)
-            
-            # Re-enable input fields and browse buttons
-            self.key_path_entry.config(state=tk.NORMAL)
-            self.passphrase_entry.config(state=tk.NORMAL)
-            self.output_dir_entry.config(state=tk.NORMAL)
-            for child in self.forensic_tab.winfo_children():
-                if isinstance(child, ttk.Frame):
-                    for widget in child.winfo_children():
-                        if isinstance(widget, ttk.Button) and widget['text'] == "Browse":
-                            widget.config(state=tk.NORMAL)
-            
-            if self.cancellation_requested:
-                self.log_message("Cancellation cleanup complete. Resources have been restored/terminated as applicable.", 'warning')
-            else:
-                self.log_message("Post-process cleanup complete.", 'info')
+        except (BotoCoreError, ClientError, paramiko.SSHException, OSError) as e:
+            self.log_message(f"\nCRITICAL ERROR during cleanup: A network or AWS API error occurred: {e}", 'error')
+            self.show_manual_intervention_warning(f"During cleanup process: {e}")
+        except Exception as e:
+            self.log_message(f"An unexpected error occurred during cleanup: {e}", "error")
+        finally:
+            # --- GUI updates must be scheduled back to the main thread using root.after ---
+            def schedule_gui_updates():
+                self.start_btn.config(state=tk.NORMAL)
+                self.cancel_btn.config(state=tk.DISABLED)
+                self.notebook.tab(0, state=tk.NORMAL)
+                self.overall_progress.config(value=0)
+                self.step_progress.config(value=0)
+                
+                # Re-enable input fields and browse buttons
+                self.key_path_entry.config(state=tk.NORMAL)
+                self.passphrase_entry.config(state=tk.NORMAL)
+                self.output_dir_entry.config(state=tk.NORMAL)
+                for child in self.forensic_tab.winfo_children():
+                    if isinstance(child, ttk.Frame):
+                        for widget in child.winfo_children():
+                            if isinstance(widget, ttk.Button) and widget['text'] == "Browse":
+                                widget.config(state=tk.NORMAL)
+                
+                if self.cancellation_requested:
+                    self.log_message("Cancellation cleanup complete. Resources have been restored/terminated as applicable.", 'warning')
+                else:
+                    self.log_message("Post-process cleanup complete.", 'info')
 
-            # Reset state variables
-            self.cancellation_requested = False 
-            self.forensic_instance = None
-            self.current_volume_original_state = None
-            self.sftp_client = None
+                # Reset state variables
+                self.cancellation_requested = False 
+                self.forensic_instance = None
+                self.current_volume_original_state = None
+                self.sftp_client = None
+                
+                self.cleanup_in_progress = False
             
-            # FIX: Reset the cleanup flag so another process can run.
-            self.cleanup_in_progress = False
-        
-        self.root.after(0, schedule_gui_updates)
-        # ===================== END OF FIX =====================
+            self.root.after(0, schedule_gui_updates)
 
     def cancel_process(self):
         """Attempt to cancel the forensic process with forceful termination of SFTP."""
         if messagebox.askyesno("Confirm Cancel", 
                         "Are you sure you want to request cancellation of the forensic process? "
                         "If a process is running, it will attempt to stop and clean up."):
-            messagebox.showwarning("WARNING!","CANCELLING THE PROCESS, THE TOOL MIGHT BE UNRESPONSIVE FOR A WHILE. DO NOT CLOSE THE TOOL!")
+            messagebox.showwarning("WARNING!","CANCELLING THE PROCESS, DO NOT CLOSE THE TOOL!")
             self.log_message("CANCELLATION REQUESTED BY USER - Forcefully stopping processes...", 'warning')
-            self.log_message("NOTE: CANCELLING PROCESS, THE TOOL MIGHT BE UNRESPONSIVE FOR A WHILE. DO NOT CLOSE THE TOOL!", "critical_warning")      
+            self.log_message("NOTE: CANCELLING PROCESS, DO NOT CLOSE THE TOOL!", "critical_warning")      
             
             self.cancellation_requested = True
             
@@ -1221,6 +1230,25 @@ class ForensicGUI:
                 self.root.after(1, self.start_cleanup_process)
 
             threading.Thread(target=perform_cancellation_shutdown, daemon=True).start()
+
+    # FIX: Add a new method to show the manual intervention warning in a thread-safe way
+    def show_manual_intervention_warning(self, error_message):
+        """
+        Schedules a thread-safe popup to warn the user about manual cleanup.
+        """
+        title = "Connection Lost - Manual Cleanup Required"
+        message = (
+            f"A critical error occurred, likely due to a network interruption:\n\n"
+            f"{error_message}\n\n"
+            f"The application can no longer manage the AWS resources.\n\n"
+            f"IMMEDIATE ACTION REQUIRED:\n"
+            f"1. Go to the AWS EC2 Console.\n"
+            f"2. Manually terminate any 'Forensic-...' instance that may be running.\n"
+            f"3. Ensure the original evidence volume is re-attached to the original instance.\n\n"
+            f"Leaving resources running will incur costs."
+        )
+        # Schedule the messagebox to be shown on the main GUI thread
+        self.root.after(0, lambda: messagebox.showerror(title, message))
 
 
     # ===================== AWS HELPER METHODS =====================
@@ -1875,7 +1903,7 @@ class ForensicGUI:
                                 elapsed = current_time - self.start_time
                                 speed = self.transferred / elapsed if elapsed > 0 else 0
                                 speed_mbps = (speed * 8) / (1024 * 1024) 
-                                self.log_message(f"\rDL {self.file_display_name}: {percent:.1f}% ({self.transferred/(1024*1024):.2f}/{self.total_bytes/(1024*1024):.2f} MB) @ {speed_mbps:.2f} Mbps\n", 'info', timestamp=False, newline=False)
+                                self.log_func(f"\rDL {self.file_display_name}: {percent:.1f}% ({self.transferred/(1024*1024):.2f}/{self.total_bytes/(1024*1024):.2f} MB) @ {speed_mbps:.2f} Mbps\n", 'info', timestamp=False, newline=False)
                                 self.last_logged_percent = int(percent)
                                 if self.transferred == self.total_bytes:
                                      self.log_func("", 'info', timestamp=False, newline=True) 
@@ -2023,3 +2051,4 @@ class ForensicGUI:
             import traceback
             self.log_message(traceback.format_exc(), "error")
             return None
+
