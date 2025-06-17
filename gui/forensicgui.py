@@ -1719,64 +1719,6 @@ class ForensicGUI:
                  self.root.after(0, lambda: progress_widget.config(value=0))
             return f"N/A_Local_Hash_Error_For_{os.path.basename(local_file_path)}"
             
-    def calculate_sha256_local_parallel(self, file_paths):
-        """
-        Calculate SHA256 hashes for a list of local files in parallel using multiprocessing.
-        Logs results to the GUI.
-        """
-        def hash_file(path):
-            try:
-                sha256_hash = hashlib.sha256()
-                with open(path, "rb") as f:
-                    for byte_block in iter(lambda: f.read(4096 * 1024), b""):
-                        sha256_hash.update(byte_block)
-                return (path, sha256_hash.hexdigest())
-            except Exception as e:
-                return (path, f"ERROR: {e}")
-
-        self.log_message(f"Starting parallel SHA256 hashing for {len(file_paths)} files...", "info")
-        with multiprocessing.Pool(processes=min(multiprocessing.cpu_count(), len(file_paths))) as pool:
-            results = pool.map(hash_file, file_paths)
-        for path, hashval in results:
-            self.log_message(f"SHA256 for {os.path.basename(path)}: {hashval}", "success" if not hashval.startswith("ERROR") else "error")
-        return dict(results)
-
-    def gpg_encrypt_symmetric(self, input_file_path, passphrase, output_file_path):
-        """Encrypt the forensic image using GPG symmetrically."""
-        # Validate passphrase before proceeding
-        if not passphrase or not passphrase.strip():
-            self.log_message("GPG encryption failed: Passphrase is empty or only whitespace.", "error")
-            raise Exception("GPG encryption failed: Passphrase is empty or only whitespace.")
-        if any(c in passphrase for c in ["'", '"', "\n", "\r"]):
-            self.log_message("GPG encryption failed: Passphrase contains invalid characters (quotes or newlines).", "error")
-            raise Exception("GPG encryption failed: Passphrase contains invalid characters (quotes or newlines).")
-        try:
-            passphrase.encode("ascii")
-        except Exception:
-            self.log_message("GPG encryption failed: Passphrase must contain only ASCII characters.", "error")
-            raise Exception("GPG encryption failed: Passphrase must contain only ASCII characters.")
-
-        if self.cancellation_requested:
-            self.log_message(f"GPG encryption for {input_file_path} cancelled before start.", "warning")
-            raise InterruptedError("GPG encryption cancelled.")
-
-        command = (f"gpg --batch --yes --pinentry-mode loopback --passphrase '{passphrase}' "
-                   f"--symmetric --cipher-algo AES256 "
-                   f"-o {output_file_path} {input_file_path}")
-        self.log_message(f"Executing GPG encryption: gpg ... -o {output_file_path} {input_file_path}", 'info', timestamp=False) 
-        
-        stdin, stdout, stderr = self.ssh_client.exec_command(command, timeout=7200) 
-        exit_status = stdout.channel.recv_exit_status()
-        
-        out = stdout.read().decode(errors='ignore').strip()
-        err = stderr.read().decode(errors='ignore').strip()
-
-        if out: self.log_message(f"GPG stdout: {out}", 'info', timestamp=False)
-        if err: self.log_message(f"GPG stderr: {err}", 'warning' if "warning" in err.lower() else 'info', timestamp=False) 
-
-        if exit_status != 0:
-            raise Exception(f"GPG encryption failed with exit status {exit_status}. Stderr: {err}")
-        self.log_message(f"GPG encryption successful: {output_file_path}", 'success')
 
     def get_remote_file_content(self, remote_file_path):
         """Fetch content of a small text file from remote."""
