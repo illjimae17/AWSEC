@@ -1094,10 +1094,10 @@ class ForensicGUI:
 
         self.cleanup_in_progress = True
         self.log_message("Cleanup process started in background...", 'info')
-        cleanup_thread = threading.Thread(target=self._run_cleanup_logic, daemon=True)
+        cleanup_thread = threading.Thread(target=self.run_cleanup_logic, daemon=True)
         cleanup_thread.start()
             
-    def _run_cleanup_logic(self):
+    def run_cleanup_logic(self):
         """
         Contains the actual blocking cleanup logic. 
         THIS FUNCTION SHOULD ONLY BE CALLED AS A TARGET OF A THREAD.
