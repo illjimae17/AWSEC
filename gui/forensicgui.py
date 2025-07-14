@@ -1046,7 +1046,8 @@ class ForensicGUI:
             self.root.update_idletasks()
             # -------------------------------------------------
 
-            passphrase_commitment = hashlib.sha256(self.passphrase_entry.get().encode()).hexdigest()
+            passphrase_commitment_1 = hashlib.sha256(self.passphrase_entry.get().encode()).hexdigest()
+            passphrase_commitment_2 = hashlib.sha256(passphrase_commitment_1.encode()).hexdigest()
             
             coc_details = self.export_coc_logs(
                 investigator=self.investigator,
@@ -1054,7 +1055,7 @@ class ForensicGUI:
                 forensic_instance_data=self.forensic_instance,
                 volume_id=vol_id_to_process,
                 key_path_name=os.path.basename(self.key_path_entry.get()),
-                passphrase_commitment=passphrase_commitment,
+                passphrase_commitment=passphrase_commitment_2,
                 hashes={ 
                     "raw_on_forensic": raw_image_hash_on_forensic, 
                     "encrypted_on_forensic": encrypted_image_hash_on_forensic,
